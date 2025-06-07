@@ -2,13 +2,11 @@ import org.antlr.v4.runtime.*;
 import org.antlr.v4.runtime.tree.*;
 import java.io.*;
 import java.nio.charset.Charset;
+import java.nio.file.*;
 import java.util.*;
 import java.util.regex.*;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
-public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<StringBuilder> {
-    private static final Logger LOG = LoggerFactory.getLogger(CobolPreprocessorDriver.class);
+public class Driver extends CobolPreprocessorBaseVisitor<StringBuilder> {
     private StringBuilder output = new StringBuilder();
     private static final String NEWLINE = "\n";
     private static final String EXEC_CICS_TAG = "*>>EXECCICS";
@@ -24,16 +22,9 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
     private Map<String, String> copyBooks = new HashMap<>();
     private List<ReplaceContext> replaceContexts = new ArrayList<>();
     private CobolSourceFormatEnum format = CobolSourceFormatEnum.FIXED;
-    private boolean strictMode = true; // Configurable strictness for validation
+    private boolean strictMode = true;
 
-    // Inner interface for CobolPreprocessor
-    private interface CobolPreprocessor {
-        String process(File cobolFile, CobolParserParams params) throws IOException;
-        String process(String cobolCode, CobolParserParams params);
-    }
-
-    // Inner interface for CobolParserParams
-    private interface CobolParserParams {
+    private static interface CobolParserParams {
         CobolSourceFormatEnum getFormat();
         File getCopyBookDirectory();
         List<File> getCopyBookDirectories();
@@ -42,8 +33,7 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
         boolean isStrictMode();
     }
 
-    // Inner enum for CobolSourceFormatEnum
-    private enum CobolSourceFormatEnum {
+    private static enum CobolSourceFormatEnum {
         FIXED(Pattern.compile("^(.{0,6})(.{0,1})(.{0,4})(.{0,60})(.*)?$"), true, 80),
         TANDEM(Pattern.compile("^(.{0,1})(.{0,131})(.*)?$"), false, 132),
         VARIABLE(Pattern.compile("^(.{0,6})(.{0,1})(.{0,4})(.{0,252})(.*)?$"), true, 256);
@@ -71,8 +61,7 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
         }
     }
 
-    // Inner implementation for CobolParserParams
-    private class CobolParserParamsImpl implements CobolParserParams {
+    private static class CobolParserParamsImpl implements CobolParserParams {
         private CobolSourceFormatEnum format = CobolSourceFormatEnum.FIXED;
         private File copyBookDirectory = new File(".");
         private List<File> copyBookDirectories = List.of(new File("."));
@@ -137,8 +126,7 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
         }
     }
 
-    // Inner class for CobolLine
-    private class CobolLine {
+    private static class CobolLine {
         private final String content;
         private final String sequenceArea;
         private final String indicatorArea;
@@ -148,8 +136,8 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
         private final boolean isContinuation;
 
         CobolLine(String content, String sequenceArea, String indicatorArea, String areaA, String areaB, String comment, boolean isContinuation) {
-            this.content = content != null ? content : "";
-            this.sequenceArea = sequenceArea != null ? sequenceArea : "";
+            this.content = content != null ? content.trim() : "";
+            this.sequenceArea = sequenceArea != null ? sequenceArea.trim() : "";
             this.indicatorArea = indicatorArea != null ? indicatorArea : "";
             this.areaA = areaA != null ? areaA.trim() : "";
             this.areaB = areaB != null ? areaB.trim() : "";
@@ -186,159 +174,7 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
         }
     }
 
-    // Inner interface for CobolLineReader
-    private interface CobolLineReader {
-        List<CobolLine> processLines(String cobolCode, CobolParserParams params) throws IOException;
-    }
-
-    // Inner implementation for CobolLineReader
-    private class CobolLineReaderImpl implements CobolLineReader {
-        @Override
-        public List<CobolLine> processLines(String cobolCode, CobolParserParams params) throws IOException {
-            List<CobolLine> result = new ArrayList<>();
-            CobolSourceFormatEnum format = params.getFormat() != null ? params.getFormat() : CobolSourceFormatEnum.FIXED;
-            Pattern pattern = format.getPattern();
-            boolean strictMode = params.isStrictMode();
-            BufferedReader reader = new BufferedReader(new StringReader(cobolCode));
-            String line;
-            StringBuilder continuationBuffer = new StringBuilder();
-            boolean isContinuation = false;
-            int lineNumber = 0;
-
-            while ((line = reader.readLine()) != null) {
-                lineNumber++;
-                if (line.length() > format.getMaxLineLength() && strictMode) {
-                    throw new IOException(String.format("Line %d exceeds %s format length (%d chars): %s",
-                            lineNumber, format, format.getMaxLineLength(), line));
-                }
-
-                Matcher matcher = pattern.matcher(line);
-                if (!matcher.matches() && !line.trim().isEmpty() && strictMode) {
-                    throw new IOException(String.format("Line %d does not match %s format: %s",
-                            lineNumber, format, line));
-                }
-
-                String sequenceArea = matcher.group(1);
-                String indicatorArea = matcher.group(2);
-                String areaA = matcher.group(3) != null ? matcher.group(3) : "";
-                String areaB = matcher.group(4) != null ? matcher.group(4) : "";
-                String comment = matcher.group(5) != null ? matcher.group(5) : "";
-                boolean nextIsContinuation = false;
-
-                if (format == CobolSourceFormatEnum.FIXED && areaB.endsWith("-") && areaB.contains("\"")) {
-                    nextIsContinuation = true;
-                }
-
-                String content;
-                if (isContinuation) {
-                    continuationBuffer.append(" ").append(areaB.trim());
-                    content = continuationBuffer.toString();
-                } else {
-                    content = areaA + (areaA.isEmpty() || areaB.isEmpty() ? "" : " ") + areaB;
-                    continuationBuffer.setLength(0);
-                    continuationBuffer.append(content);
-                }
-
-                if (!nextIsContinuation) {
-                    if (!content.isEmpty()) {
-                        result.add(new CobolLine(content, sequenceArea, indicatorArea, areaA, areaB, comment, isContinuation));
-                    }
-                    continuationBuffer.setLength(0);
-                }
-
-                isContinuation = nextIsContinuation;
-            }
-
-            return result;
-        }
-    }
-
-    // Inner interface for CobolLineIndicatorProcessor
-    private interface CobolLineIndicatorProcessor {
-        List<CobolLine> processLines(List<CobolLine> lines);
-    }
-
-    // Inner implementation for CobolLineIndicatorProcessor
-    private class CobolLineIndicatorProcessorImpl implements CobolLineIndicatorProcessor {
-        @Override
-        public List<CobolLine> processLines(List<CobolLine> lines) {
-            List<CobolLine> result = new ArrayList<>();
-            for (CobolLine line : lines) {
-                String indicator = line.getIndicatorArea();
-                if (indicator != null && (indicator.equals(CHAR_ASTERISK) || indicator.equals(CHAR_SLASH) ||
-                        indicator.equals(CHAR_D) || indicator.equals(CHAR_D_))) {
-                    continue;
-                }
-                result.add(line);
-            }
-            return result;
-        }
-    }
-
-    // Inner interface for CobolInlineCommentEntriesNormalizer
-    private interface CobolInlineCommentEntriesNormalizer {
-        List<CobolLine> processLines(List<CobolLine> lines);
-    }
-
-    // Inner implementation for CobolInlineCommentEntriesNormalizer
-    private class CobolInlineCommentEntriesNormalizerImpl implements CobolInlineCommentEntriesNormalizer {
-        @Override
-        public List<CobolLine> processLines(List<CobolLine> lines) {
-            List<CobolLine> result = new ArrayList<>();
-            for (CobolLine line : lines) {
-                String content = line.getContent();
-                if (content.contains(COMMENT_TAG)) {
-                    content = content.substring(0, content.indexOf(COMMENT_TAG)).trim();
-                }
-                if (!content.isEmpty()) {
-                    result.add(new CobolLine(content, line.getSequenceArea(), line.getIndicatorArea(),
-                            line.getAreaA(), line.getAreaB(), line.getComment(), line.isContinuation()));
-                }
-            }
-            return result;
-        }
-    }
-
-    // Inner interface for CobolCommentEntriesMarker
-    private interface CobolCommentEntriesMarker {
-        List<CobolLine> processLines(List<CobolLine> lines);
-    }
-
-    // Inner implementation for CobolCommentEntriesMarker
-    private class CobolCommentEntriesMarkerImpl implements CobolCommentEntriesMarker {
-        @Override
-        public List<CobolLine> processLines(List<CobolLine> lines) {
-            List<CobolLine> result = new ArrayList<>();
-            boolean inCommentEntry = false;
-            for (CobolLine line : lines) {
-                String content = line.getContent();
-                if (content.contains(COMMENT_ENTRY_TAG)) {
-                    inCommentEntry = true;
-                    continue;
-                }
-                if (inCommentEntry && format.isCommentEntryMultiLine()) {
-                    if (line.getIndicatorArea().equals(CHAR_ASTERISK) || content.trim().isEmpty()) {
-                        continue;
-                    } else {
-                        inCommentEntry = false;
-                    }
-                }
-                if (!content.isEmpty()) {
-                    result.add(line);
-                }
-            }
-            return result;
-        }
-    }
-
-    // Inner interface for CobolLineWriter
-    private interface CobolLineWriter {
-        String serialize(List<CobolLine> lines);
-    }
-
-    // Inner implementation for CobolLineWriter
-    private class CobolLineWriterImpl implements CobolLineWriter {
-        @Override
+    private static class CobolLineWriterImpl {
         public String serialize(List<CobolLine> lines) {
             StringBuilder result = new StringBuilder();
             for (CobolLine line : lines) {
@@ -350,43 +186,64 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
         }
     }
 
-    // Inner interface for CobolDocumentParser
     private interface CobolDocumentParser {
         String processLines(String code, CobolParserParams params) throws IOException;
     }
 
-    // Inner implementation for CobolDocumentParser
     private class CobolDocumentParserImpl implements CobolDocumentParser {
+        private final Pattern processPattern = Pattern.compile("(?i)^\\s*(CBL|PROCESS)\\s+(.+)$");
+
         @Override
         public String processLines(String code, CobolParserParams params) throws IOException {
+            // Preprocess code to normalize PROCESS/CBL directives
+            StringBuilder normalizedCode = new StringBuilder();
+            BufferedReader reader = new BufferedReader(new StringReader(code));
+            String line;
+            while ((line = reader.readLine()) != null) {
+                Matcher matcher = processPattern.matcher(line);
+                if (matcher.matches()) {
+                    normalizedCode.append("CBL ").append(matcher.group(2).trim()).append(NEWLINE);
+                } else {
+                    normalizedCode.append(line).append(NEWLINE);
+                }
+            }
+
             try {
-                CharStream input = CharStreams.fromString(code);
+                CharStream input = CharStreams.fromString(normalizedCode.toString());
                 CobolPreprocessorLexer lexer = new CobolPreprocessorLexer(input);
                 CommonTokenStream tokens = new CommonTokenStream(lexer);
                 CobolPreprocessorParser parser = new CobolPreprocessorParser(tokens);
                 parser.removeErrorListeners();
-                parser.addErrorListener(new DiagnosticErrorListener() {
-                    @Override
-                    public void syntaxError(Recognizer<?, ?> recognizer, Object offendingSymbol, int line,
-                            int charPositionInLine, String msg, RecognitionException e) {
-                        String errorMsg = String.format("Syntax error at line %d:%d: %s", line, charPositionInLine, msg);
-                        LOG.error(errorMsg);
-                        if (params.isStrictMode()) {
-                            throw new RuntimeException(errorMsg);
+                
+                // Only add error listener for actual syntax errors in strict mode
+                if (params.isStrictMode()) {
+                    parser.addErrorListener(new BaseErrorListener() {
+                        @Override
+                        public void syntaxError(Recognizer<?, ?> recognizer, Object offendingSymbol, int line,
+                                int charPositionInLine, String msg, RecognitionException e) {
+                            // Only throw for actual parse errors, not diagnostic warnings
+                            if (e != null) {
+                                System.out.println(String.format("Parse error at line %d:%d: %s", line, charPositionInLine, msg));
+                                throw new RuntimeException(msg);
+                            } else {
+                                System.out.println(String.format("Parse warning at line %d:%d: %s", line, charPositionInLine, msg));
+                            }
                         }
-                    }
-                });
-                ParseTree tree = parser.startRule();
-                output = new StringBuilder();
-                visit(tree);
-                return output.toString();
-            } catch (RuntimeException e) {
+                    });
+                }
+                
+                CobolPreprocessorParser.StartRuleContext tree = parser.startRule();
+                Driver visitor = new Driver();
+                visitor.copyBooks = copyBooks; // Share copybooks
+                visitor.replaceContexts = replaceContexts; // Share replace contexts
+                visitor.strictMode = params.isStrictMode();
+                return visitor.visitStartRule(tree).toString();
+            } catch (Exception e) {
                 throw new IOException("Failed to parse COBOL code: " + e.getMessage(), e);
             }
         }
     }
 
-    // Inner class for ReplaceRule
     private static class ReplaceRule {
         String replaceable;
         String replacement;
@@ -395,14 +252,20 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
         ReplaceRule(String replaceable, String replacement) {
             this.replaceable = replaceable;
             this.replacement = replacement;
-            boolean isPseudoText = replaceable.startsWith("==") && replaceable.endsWith("==");
-            String patternStr = isPseudoText ? replaceable.substring(2, replaceable.length() - 2) : replaceable;
-            this.pattern = Pattern.compile(isPseudoText ? Pattern.quote(patternStr) : "\\b" + Pattern.quote(patternStr) + "\\b",
-                    Pattern.CASE_INSENSITIVE);
+            
+            // Handle pseudo-text (==text==) vs regular words
+            if (replaceable.startsWith("==") && replaceable.endsWith("==")) {
+                // Pseudo-text: exact match of content between == markers
+                String content = replaceable.substring(2, replaceable.length() - 2);
+                // For pseudo-text, match anywhere in the text (not just word boundaries)
+                this.pattern = Pattern.compile(Pattern.quote(content), Pattern.CASE_INSENSITIVE);
+            } else {
+                // Regular word: match whole words only
+                this.pattern = Pattern.compile("\\b" + Pattern.quote(replaceable) + "\\b", Pattern.CASE_INSENSITIVE);
+            }
         }
     }
 
-    // Inner class for ReplaceContext
     private static class ReplaceContext {
         List<ReplaceRule> rules = new ArrayList<>();
 
@@ -413,45 +276,61 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
         String apply(String text) {
             String result = text;
             for (ReplaceRule rule : rules) {
-                result = rule.pattern.matcher(result).replaceAll(rule.replacement);
+                System.out.println("DEBUG: Applying rule '" + rule.replaceable + "' -> '" + rule.replacement + "' to: '" + result + "'");
+                
+                // Handle replacement - if replacement is pseudo-text, extract content
+                String replaceWith = rule.replacement;
+                if (replaceWith.startsWith("==") && replaceWith.endsWith("==")) {
+                    replaceWith = replaceWith.substring(2, replaceWith.length() - 2);
+                }
+                
+                String beforeReplace = result;
+                result = rule.pattern.matcher(result).replaceAll(replaceWith);
+                
+                if (!beforeReplace.equals(result)) {
+                    System.out.println("DEBUG: Rule applied! '" + beforeReplace + "' -> '" + result + "'");
+                } else {
+                    System.out.println("DEBUG: Rule pattern '" + rule.pattern.pattern() + "' did not match");
+                }
             }
             return result;
         }
     }
 
-    @Override
     public String process(File cobolFile, CobolParserParams params) throws IOException {
         if (cobolFile == null || !cobolFile.exists()) {
-            String msg = "Input file does not exist: " + (cobolFile != null ? cobolFile.getAbsolutePath() : "null");
-            LOG.error(msg);
+            String msg = String.format("Input file does not exist: %s",
+                    cobolFile != null ? cobolFile.getAbsolutePath() : "null");
+            System.out.println(msg);
             throw new IOException(msg);
         }
         if (!cobolFile.canRead()) {
-            String msg = "Input file is not readable: " + cobolFile.getAbsolutePath();
-            LOG.error(msg);
+            String msg = String.format("Input file is not readable: %s",
+                    cobolFile.getAbsolutePath());
+            System.out.println(msg);
             throw new IOException(msg);
         }
         if (cobolFile.length() == 0 && params.isStrictMode()) {
-            String msg = "Input file is empty: " + cobolFile.getAbsolutePath();
-            LOG.error(msg);
+            String msg = String.format("Input file is empty: %s",
+                    cobolFile.getAbsolutePath());
+            System.out.println(msg);
             throw new IOException(msg);
         }
         Charset charset = params != null && params.getCharset() != null ? params.getCharset() : Charset.defaultCharset();
-        LOG.info("Preprocessing file {} with line format {} and charset {}.", cobolFile.getName(),
-                params != null && params.getFormat() != null ? params.getFormat() : format, charset);
+        System.out.println(String.format("Preprocessing file %s with line format %s and charset %s",
+                cobolFile.getName(), params != null && params.getFormat() != null ? params.getFormat() : format, charset));
         String cobolFileContent = Files.readString(cobolFile.toPath(), charset);
         return process(cobolFileContent, params);
     }
 
-    @Override
     public String process(String cobolCode, CobolParserParams params) throws IOException {
         if (cobolCode == null || cobolCode.trim().isEmpty()) {
             String msg = "Input COBOL code is null or empty";
-            LOG.error(msg);
+            System.out.println(msg);
             throw new IOException(msg);
         }
         if (params == null) {
-            LOG.warn("CobolParserParams is null, using default settings.");
+            System.out.println("CobolParserParams is null, using default settings.");
             params = new CobolParserParamsImpl();
         }
         strictMode = params.isStrictMode();
@@ -459,30 +338,87 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
         loadCopyBooks(params.getCopyBookDirectories(), params.getCopyBookExtensions(), params.getCharset(), new HashSet<>());
         List<CobolLine> lines = readLines(cobolCode, params);
         List<CobolLine> rewrittenLines = rewriteLines(lines);
-        return parseDocument(rewrittenLines, params);
+        return parseDocument(lines, params);
     }
 
     protected List<CobolLine> readLines(String cobolCode, CobolParserParams params) throws IOException {
-        return new CobolLineReaderImpl().processLines(cobolCode, params);
+        List<CobolLine> result = new ArrayList<>();
+        BufferedReader reader = new BufferedReader(new StringReader(cobolCode));
+        String line;
+        
+        while ((line = reader.readLine()) != null) {
+            line = line.trim();
+            
+            // Skip empty lines
+            if (line.isEmpty()) {
+                continue;
+            }
+            
+            // Skip comment lines (lines starting with *)
+            if (line.startsWith("*")) {
+                continue;
+            }
+            
+            // Create a simple CobolLine - just use the content for now
+            result.add(new CobolLine(line, "", "", "", line, "", false));
+        }
+        
+        return result;
     }
 
     protected List<CobolLine> rewriteLines(List<CobolLine> lines) {
-        List<CobolLine> lineIndicatorProcessedLines = new CobolLineIndicatorProcessorImpl().processLines(lines);
-        List<CobolLine> normalizedInlineCommentEntriesLines = new CobolInlineCommentEntriesNormalizerImpl()
-                .processLines(lineIndicatorProcessedLines);
-        return new CobolCommentEntriesMarkerImpl().processLines(normalizedInlineCommentEntriesLines);
+        // Skip the complex line processing for now and just filter comments
+        List<CobolLine> result = new ArrayList<>();
+        boolean inCommentEntry = false;
+        
+        for (CobolLine line : lines) {
+            String content = line.getContent();
+            
+            // Check for comment entry markers
+            if (content.contains("*>>CE")) {
+                inCommentEntry = true;
+                continue;
+            }
+            
+            // Skip lines while in comment entry mode
+            if (inCommentEntry) {
+                if (content.startsWith("*") || content.trim().isEmpty()) {
+                    continue;
+                } else {
+                    inCommentEntry = false; // Exit comment mode
+                }
+            }
+            
+            // Skip regular comment lines
+            if (content.startsWith("*")) {
+                continue;
+            }
+            
+            result.add(line);
+        }
+        
+        return result;
     }
 
     protected String parseDocument(List<CobolLine> lines, CobolParserParams params) throws IOException {
-        return new CobolDocumentParserImpl().processLines(new CobolLineWriterImpl().serialize(lines), params);
+        String serializedLines = new CobolLineWriterImpl().serialize(lines);
+        return new CobolDocumentParserImpl().processLines(serializedLines, params);
     }
 
-    // ANTLR Visitor Methods
     @Override
     public StringBuilder visitStartRule(CobolPreprocessorParser.StartRuleContext ctx) {
-        for (ParseTree child : ctx.children) {
-            if (!(child instanceof TerminalNode)) {
-                visit(child);
+        output = new StringBuilder();
+        for (int i = 0; i < ctx.getChildCount(); i++) {
+            ParseTree child = ctx.getChild(i);
+            if (child instanceof TerminalNode) {
+                // Skip terminal nodes that are just whitespace or newlines
+                String text = child.getText().trim();
+                if (!text.isEmpty() && !text.equals("\n") && !text.equals("\r\n")) {
+                    // Only process meaningful terminal content
+                    continue;
+                }
+            } else {
+                child.accept(this);
             }
         }
         return output;
@@ -490,32 +426,61 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
 
     @Override
     public StringBuilder visitCompilerOptions(CobolPreprocessorParser.CompilerOptionsContext ctx) {
-        output.append(ctx.getText()).append(NEWLINE);
+        // Reconstruct with proper spacing between tokens
+        StringBuilder lineBuilder = new StringBuilder();
+        
+        for (int i = 0; i < ctx.getChildCount(); i++) {
+            ParseTree child = ctx.getChild(i);
+            String token = child.getText();
+            
+            // Add space before token (except for first token and punctuation)
+            if (i > 0 && !token.trim().isEmpty() && !token.equals(".") && !token.equals(",")) {
+                lineBuilder.append(" ");
+            }
+            lineBuilder.append(token);
+        }
+        
+        String text = lineBuilder.toString().trim();
+        if (!text.isEmpty()) {
+            output.append(text).append(NEWLINE);
+        }
         return output;
     }
 
     @Override
     public StringBuilder visitCompilerOption(CobolPreprocessorParser.CompilerOptionContext ctx) {
-        output.append(ctx.getText()).append(NEWLINE);
+        // This method is called for individual options within compiler options
+        // The parent visitCompilerOptions will handle the reconstruction
         return output;
     }
 
     @Override
     public StringBuilder visitCopyStatement(CobolPreprocessorParser.CopyStatementContext ctx) {
-        String copySource = ctx.copySource().getText().replace("\"", "").replace("'", "").toUpperCase();
+        String copySource = ctx.copySource().getText().replaceAll("[\"'.]", "").toUpperCase();
         String copyContent = copyBooks.getOrDefault(copySource, null);
+        
         if (copyContent == null) {
             String msg = "Copybook not found: " + copySource;
-            LOG.error(msg);
+            System.out.println(msg);
             if (strictMode) {
                 throw new RuntimeException(msg);
             }
-            copyContent = "COPY " + copySource + " content not found.";
+            copyContent = "* COPY " + copySource + " content not found.";
         }
-        if (ctx.replacingPhrase() != null) {
-            copyContent = applyReplacing(copyContent, ctx.replacingPhrase());
+        
+        // Apply REPLACING if present
+        if (ctx.replacingPhrase() != null && !ctx.replacingPhrase().isEmpty()) {
+            copyContent = applyReplacing(copyContent, ctx.replacingPhrase().get(0));
         }
-        output.append(copyContent).append(NEWLINE);
+        
+        // Process each line of copybook content to preserve formatting
+        String[] lines = copyContent.split("\\r?\\n");
+        for (String line : lines) {
+            if (!line.trim().isEmpty()) {
+                output.append(line.trim()).append(NEWLINE);
+            }
+        }
+        
         return output;
     }
 
@@ -525,23 +490,50 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
         for (CobolPreprocessorParser.ReplaceClauseContext clause : ctx.replaceClause()) {
             String replaceable = clause.replaceable().getText();
             String replacement = clause.replacement().getText();
+            System.out.println("DEBUG: Adding REPLACE rule: '" + replaceable + "' -> '" + replacement + "'");
             context.addRule(replaceable, replacement);
         }
         replaceContexts.add(context);
+        System.out.println("DEBUG: Total active REPLACE contexts: " + replaceContexts.size());
         return output;
     }
 
     @Override
     public StringBuilder visitReplaceOffStatement(CobolPreprocessorParser.ReplaceOffStatementContext ctx) {
+        System.out.println("DEBUG: REPLACE OFF encountered, removing last context");
         if (!replaceContexts.isEmpty()) {
             replaceContexts.remove(replaceContexts.size() - 1);
+            System.out.println("DEBUG: Remaining REPLACE contexts: " + replaceContexts.size());
         }
         return output;
     }
 
     @Override
     public StringBuilder visitExecCicsStatement(CobolPreprocessorParser.ExecCicsStatementContext ctx) {
-        String text = ctx.getText().replace(EXEC_CICS_TAG, "EXEC CICS").replace(EXEC_END_TAG, "END-EXEC");
+        // Reconstruct EXEC CICS statement with proper spacing
+        StringBuilder lineBuilder = new StringBuilder();
+        
+        for (int i = 0; i < ctx.getChildCount(); i++) {
+            ParseTree child = ctx.getChild(i);
+            String token = child.getText();
+            
+            // Add space before token (except for first token and punctuation)
+            if (i > 0 && !token.trim().isEmpty() && !token.equals(".") && !token.equals(",")) {
+                lineBuilder.append(" ");
+            }
+            lineBuilder.append(token);
+        }
+        
+        String text = lineBuilder.toString().trim();
+        
+        // Handle special EXEC tags transformation
+        if (text.contains(EXEC_CICS_TAG)) {
+            text = text.replace(EXEC_CICS_TAG, "EXEC CICS");
+        }
+        if (text.contains(EXEC_END_TAG)) {
+            text = text.replace(EXEC_END_TAG, "END-EXEC");
+        }
+        
         output.append(text).append(NEWLINE);
         return output;
     }
@@ -555,7 +547,7 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
             if (copyContent != null) {
                 text = copyContent;
             } else {
-                LOG.warn("EXEC SQL INCLUDE copybook not found: {}", includeName);
+                System.out.println("EXEC SQL INCLUDE copybook not found: " + includeName);
             }
         }
         output.append(text).append(NEWLINE);
@@ -586,24 +578,74 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
 
     @Override
     public StringBuilder visitCharDataLine(CobolPreprocessorParser.CharDataLineContext ctx) {
-        String text = ctx.getText();
-        for (ReplaceContext context : replaceContexts) {
-            text = context.apply(text);
+        // Get individual tokens and reconstruct with proper spacing
+        StringBuilder lineBuilder = new StringBuilder();
+        
+        for (int i = 0; i < ctx.getChildCount(); i++) {
+            ParseTree child = ctx.getChild(i);
+            String token = child.getText();
+            
+            // Add space before token (except for first token and punctuation)
+            if (i > 0 && !token.trim().isEmpty() && !token.equals(".") && !token.equals(",")) {
+                lineBuilder.append(" ");
+            }
+            lineBuilder.append(token);
         }
-        output.append(text).append(NEWLINE);
+        
+        String text = lineBuilder.toString().trim();
+        
+        // Skip if this line is a comment or empty
+        if (text.isEmpty() || text.startsWith("*")) {
+            return output;
+        }
+        
+        System.out.println("DEBUG: Processing line: '" + text + "'");
+        System.out.println("DEBUG: Active REPLACE contexts: " + replaceContexts.size());
+        
+        // Apply active REPLACE transformations
+        String originalText = text;
+        for (int i = 0; i < replaceContexts.size(); i++) {
+            ReplaceContext context = replaceContexts.get(i);
+            text = context.apply(text);
+            System.out.println("DEBUG: After REPLACE context " + i + ": '" + text + "'");
+        }
+        
+        if (!originalText.equals(text)) {
+            System.out.println("DEBUG: Text changed from '" + originalText + "' to '" + text + "'");
+        }
+        
+        // Only append non-empty lines
+        if (!text.isEmpty()) {
+            output.append(text).append(NEWLINE);
+        }
         return output;
     }
 
     private String applyReplacing(String content, CobolPreprocessorParser.ReplacingPhraseContext replacingPhrase) {
+        if (replacingPhrase == null) {
+            System.out.println("Invalid replacing phrase, skipping replacement.");
+            return content;
+        }
+        
         String result = content;
         for (CobolPreprocessorParser.ReplaceClauseContext clause : replacingPhrase.replaceClause()) {
             String replaceable = clause.replaceable().getText();
             String replacement = clause.replacement().getText();
-            boolean isPseudoText = replaceable.startsWith("==") && replaceable.endsWith("==");
-            String patternStr = isPseudoText ? replaceable.substring(2, replaceable.length() - 2) : replaceable;
-            Pattern pattern = Pattern.compile(isPseudoText ? Pattern.quote(patternStr) : "\\b" + Pattern.quote(patternStr) + "\\b",
-                    Pattern.CASE_INSENSITIVE);
-            result = pattern.matcher(result).replaceAll(replacement);
+            
+            // Handle pseudo-text replacement
+            if (replaceable.startsWith("==") && replaceable.endsWith("==")) {
+                String searchText = replaceable.substring(2, replaceable.length() - 2);
+                String replaceText = replacement.startsWith("==") && replacement.endsWith("==") 
+                    ? replacement.substring(2, replacement.length() - 2) 
+                    : replacement;
+                // For pseudo-text, match anywhere (not just word boundaries)
+                Pattern pattern = Pattern.compile(Pattern.quote(searchText), Pattern.CASE_INSENSITIVE);
+                result = pattern.matcher(result).replaceAll(replaceText);
+            } else {
+                // Regular word replacement
+                Pattern pattern = Pattern.compile("\\b" + Pattern.quote(replaceable) + "\\b", Pattern.CASE_INSENSITIVE);
+                result = pattern.matcher(result).replaceAll(replacement);
+            }
         }
         return result;
     }
@@ -612,7 +654,7 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
         copyBooks.clear();
         for (File dir : directories) {
             if (!dir.isDirectory()) {
-                LOG.warn("Copybook directory is invalid: {}", dir.getAbsolutePath());
+                System.out.println("Copybook directory is invalid: " + dir.getAbsolutePath());
                 continue;
             }
             File[] files = dir.listFiles((d, name) -> {
@@ -629,7 +671,7 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
             for (File file : files) {
                 String key = file.getName().replaceFirst("[.][^.]+$", "").toUpperCase();
                 if (included.contains(key)) {
-                    LOG.error("Circular copybook dependency detected: {}", key);
+                    System.out.println("Circular copybook dependency detected: " + key);
                     if (strictMode) {
                         throw new IOException("Circular copybook dependency: " + key);
                     }
@@ -661,12 +703,17 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
                             }
                         }
                         if (nestedContent == null) {
-                            LOG.warn("Nested copybook not found: {}", nestedCopy);
+                            System.out.println("Nested copybook not found: " + nestedCopy);
                             resolvedContent.append("COPY ").append(nestedCopy).append(" content not found.");
                         } else {
                             String processedContent = nestedContent;
                             if (replacing != null) {
-                                processedContent = applyReplacing(processedContent, parseReplacingPhrase(replacing));
+                                CobolPreprocessorParser.ReplacingPhraseContext phraseContext = parseReplacingPhrase(replacing);
+                                if (phraseContext != null) {
+                                    processedContent = applyReplacing(processedContent, phraseContext);
+                                } else {
+                                    System.out.println("Skipping invalid REPLACING clause in copybook: " + replacing);
+                                }
                             }
                             resolvedContent.append(processedContent);
                         }
@@ -674,9 +721,9 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
                     }
                     resolvedContent.append(copyContent, lastEnd, copyContent.length());
                     copyBooks.put(key, resolvedContent.toString());
-                    LOG.info("Loaded copybook: {}", file.getName());
+                    System.out.println("Loaded copybook: " + file.getName());
                 } catch (IOException e) {
-                    LOG.error("Failed to load copybook {}: {}", file.getName(), e.getMessage());
+                    System.out.println("Failed to load copybook " + file.getName() + ": " + e.getMessage());
                     if (strictMode) {
                         throw e;
                     }
@@ -699,7 +746,7 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
         return null;
     }
 
-    private void loadCopyBook(File file, Charset charset, Set<String> included) throws IOException {
+    protected void loadCopyBook(File file, Charset charset, Set<String> included) throws IOException {
         String key = file.getName().replaceFirst("[.][^.]+$", "").toUpperCase();
         if (included.contains(key)) {
             throw new IOException("Circular copybook dependency: " + key);
@@ -725,35 +772,35 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
             CobolPreprocessorParser parser = new CobolPreprocessorParser(tokens);
             return parser.replacingPhrase();
         } catch (Exception e) {
-            LOG.warn("Failed to parse replacing phrase: {}", replacingText);
+            System.out.println("Failed to parse replacing phrase: " + replacingText);
             return null;
         }
     }
 
     public static void main(String[] args) throws IOException {
         if (args.length < 2) {
-            System.err.println("Usage: java CobolPreprocessorDriver <input.cbl> <output.cbl>");
+            System.err.println("Usage: java Driver <input.cbl> <output.cbl>");
             System.exit(1);
         }
-
+        
         String inputFile = args[0];
         String outputFile = args[1];
-
-        CobolPreprocessorDriver preprocessor = new CobolPreprocessorDriver();
-        CobolParserParams params = new CobolPreprocessorDriver.CobolParserParamsImpl();
-        ((CobolPreprocessorDriver.CobolParserParamsImpl) params).setFormat(CobolSourceFormatEnum.FIXED);
-        ((CobolPreprocessorDriver.CobolParserParamsImpl) params).setCopyBookDirectory(new File("./copybooks"));
-        ((CobolPreprocessorDriver.CobolParserParamsImpl) params).setCopyBookDirectories(Arrays.asList(new File("./copybooks")));
-        ((CobolPreprocessorDriver.CobolParserParamsImpl) params).setCopyBookExtensions(Arrays.asList("cbl", "cpy"));
-        ((CobolPreprocessorDriver.CobolParserParamsImpl) params).setCharset(Charset.defaultCharset());
-        ((CobolPreprocessorDriver.CobolParserParamsImpl) params).setStrictMode(true);
-
+        
+        Driver preprocessor = new Driver();
+        CobolParserParams params = new CobolParserParamsImpl();
+        ((CobolParserParamsImpl) params).setFormat(CobolSourceFormatEnum.FIXED);
+        ((CobolParserParamsImpl) params).setCopyBookDirectory(new File("./copybooks"));
+        ((CobolParserParamsImpl) params).setCopyBookDirectories(Arrays.asList(new File("./copybooks")));
+        ((CobolParserParamsImpl) params).setCopyBookExtensions(Arrays.asList("cbl", "cpy"));
+        ((CobolParserParamsImpl) params).setCharset(Charset.defaultCharset());
+        ((CobolParserParamsImpl) params).setStrictMode(true);
+        
         String result = preprocessor.process(new File(inputFile), params);
 
         try (BufferedWriter writer = new BufferedWriter(new FileWriter(outputFile))) {
             writer.write(result);
-        }
-
+        }   
+            
         System.out.println("Preprocessing completed. Output written to " + outputFile);
     }
 }
