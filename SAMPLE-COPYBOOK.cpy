@@ -1,0 +1,2 @@
+WORKING-STORAGE SECTION.
+           01. . . SAMPLE-VAR PIC X(10).
