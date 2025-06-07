@@ -1,41 +1,440 @@
 import org.antlr.v4.runtime.*;
 import org.antlr.v4.runtime.tree.*;
-import io.proleap.cobol.asg.params.CobolParserParams;
-import io.proleap.cobol.preprocessor.CobolPreprocessor;
-import io.proleap.cobol.preprocessor.sub.CobolLine;
-import io.proleap.cobol.preprocessor.sub.document.CobolDocumentParser;
-import io.proleap.cobol.preprocessor.sub.document.impl.CobolDocumentParserImpl;
-import io.proleap.cobol.preprocessor.sub.line.reader.CobolLineReader;
-import io.proleap.cobol.preprocessor.sub.line.reader.impl.CobolLineReaderImpl;
-import io.proleap.cobol.preprocessor.sub.line.rewriter.CobolCommentEntriesMarker;
-import io.proleap.cobol.preprocessor.sub.line.rewriter.impl.CobolCommentEntriesMarkerImpl;
-import io.proleap.cobol.preprocessor.sub.line.rewriter.CobolInlineCommentEntriesNormalizer;
-import io.proleap.cobol.preprocessor.sub.line.rewriter.impl.CobolInlineCommentEntriesNormalizerImpl;
-import io.proleap.cobol.preprocessor.sub.line.rewriter.CobolLineIndicatorProcessor;
-import io.proleap.cobol.preprocessor.sub.line.rewriter.impl.CobolLineIndicatorProcessorImpl;
-import io.proleap.cobol.preprocessor.sub.line.writer.CobolLineWriter;
-import io.proleap.cobol.preprocessor.sub.line.writer.impl.CobolLineWriterImpl;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.io.*;
 import java.nio.charset.Charset;
 import java.util.*;
+import java.util.regex.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<StringBuilder> implements CobolPreprocessor {
+public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<StringBuilder> {
     private static final Logger LOG = LoggerFactory.getLogger(CobolPreprocessorDriver.class);
     private StringBuilder output = new StringBuilder();
+    private static final String NEWLINE = "\n";
+    private static final String EXEC_CICS_TAG = "*>>EXECCICS";
+    private static final String EXEC_SQL_TAG = "*>>EXECSQL";
+    private static final String EXEC_SQLIMS_TAG = "*>>EXECSQLIMS";
+    private static final String EXEC_END_TAG = "*>>END-EXEC";
+    private static final String COMMENT_TAG = "*>";
+    private static final String COMMENT_ENTRY_TAG = "*>>CE";
+    private static final String CHAR_ASTERISK = "*";
+    private static final String CHAR_SLASH = "/";
+    private static final String CHAR_D = "D";
+    private static final String CHAR_D_ = "d";
+    private Map<String, String> copyBooks = new HashMap<>();
+    private List<ReplaceContext> replaceContexts = new ArrayList<>();
     private CobolSourceFormatEnum format = CobolSourceFormatEnum.FIXED;
+    private boolean strictMode = true; // Configurable strictness for validation
+
+    // Inner interface for CobolPreprocessor
+    private interface CobolPreprocessor {
+        String process(File cobolFile, CobolParserParams params) throws IOException;
+        String process(String cobolCode, CobolParserParams params);
+    }
+
+    // Inner interface for CobolParserParams
+    private interface CobolParserParams {
+        CobolSourceFormatEnum getFormat();
+        File getCopyBookDirectory();
+        List<File> getCopyBookDirectories();
+        List<String> getCopyBookExtensions();
+        Charset getCharset();
+        boolean isStrictMode();
+    }
+
+    // Inner enum for CobolSourceFormatEnum
+    private enum CobolSourceFormatEnum {
+        FIXED(Pattern.compile("^(.{0,6})(.{0,1})(.{0,4})(.{0,60})(.*)?$"), true, 80),
+        TANDEM(Pattern.compile("^(.{0,1})(.{0,131})(.*)?$"), false, 132),
+        VARIABLE(Pattern.compile("^(.{0,6})(.{0,1})(.{0,4})(.{0,252})(.*)?$"), true, 256);
+
+        private final Pattern pattern;
+        private final boolean commentEntryMultiLine;
+        private final int maxLineLength;
+
+        CobolSourceFormatEnum(Pattern pattern, boolean commentEntryMultiLine, int maxLineLength) {
+            this.pattern = pattern;
+            this.commentEntryMultiLine = commentEntryMultiLine;
+            this.maxLineLength = maxLineLength;
+        }
+
+        public Pattern getPattern() {
+            return pattern;
+        }
+
+        public boolean isCommentEntryMultiLine() {
+            return commentEntryMultiLine;
+        }
+
+        public int getMaxLineLength() {
+            return maxLineLength;
+        }
+    }
+
+    // Inner implementation for CobolParserParams
+    private class CobolParserParamsImpl implements CobolParserParams {
+        private CobolSourceFormatEnum format = CobolSourceFormatEnum.FIXED;
+        private File copyBookDirectory = new File(".");
+        private List<File> copyBookDirectories = List.of(new File("."));
+        private List<String> copyBookExtensions = List.of("cbl", "cpy");
+        private Charset charset = Charset.defaultCharset();
+        private boolean strictMode = true;
+
+        @Override
+        public CobolSourceFormatEnum getFormat() {
+            return format;
+        }
+
+        public void setFormat(CobolSourceFormatEnum format) {
+            this.format = format;
+        }
+
+        @Override
+        public File getCopyBookDirectory() {
+            return copyBookDirectory;
+        }
+
+        public void setCopyBookDirectory(File copyBookDirectory) {
+            this.copyBookDirectory = copyBookDirectory;
+            this.copyBookDirectories = List.of(copyBookDirectory);
+        }
+
+        @Override
+        public List<File> getCopyBookDirectories() {
+            return copyBookDirectories;
+        }
+
+        public void setCopyBookDirectories(List<File> copyBookDirectories) {
+            this.copyBookDirectories = copyBookDirectories != null ? copyBookDirectories : List.of();
+            this.copyBookDirectory = copyBookDirectories != null && !copyBookDirectories.isEmpty() ? copyBookDirectories.get(0) : new File(".");
+        }
+
+        @Override
+        public List<String> getCopyBookExtensions() {
+            return copyBookExtensions;
+        }
+
+        public void setCopyBookExtensions(List<String> copyBookExtensions) {
+            this.copyBookExtensions = copyBookExtensions != null ? copyBookExtensions : List.of("cbl", "cpy");
+        }
+
+        @Override
+        public Charset getCharset() {
+            return charset;
+        }
+
+        public void setCharset(Charset charset) {
+            this.charset = charset != null ? charset : Charset.defaultCharset();
+        }
+
+        @Override
+        public boolean isStrictMode() {
+            return strictMode;
+        }
+
+        public void setStrictMode(boolean strictMode) {
+            this.strictMode = strictMode;
+        }
+    }
+
+    // Inner class for CobolLine
+    private class CobolLine {
+        private final String content;
+        private final String sequenceArea;
+        private final String indicatorArea;
+        private final String areaA;
+        private final String areaB;
+        private final String comment;
+        private final boolean isContinuation;
+
+        CobolLine(String content, String sequenceArea, String indicatorArea, String areaA, String areaB, String comment, boolean isContinuation) {
+            this.content = content != null ? content : "";
+            this.sequenceArea = sequenceArea != null ? sequenceArea : "";
+            this.indicatorArea = indicatorArea != null ? indicatorArea : "";
+            this.areaA = areaA != null ? areaA.trim() : "";
+            this.areaB = areaB != null ? areaB.trim() : "";
+            this.comment = comment != null ? comment.trim() : "";
+            this.isContinuation = isContinuation;
+        }
+
+        public String getContent() {
+            return content;
+        }
+
+        public String getSequenceArea() {
+            return sequenceArea;
+        }
+
+        public String getIndicatorArea() {
+            return indicatorArea;
+        }
+
+        public String getAreaA() {
+            return areaA;
+        }
+
+        public String getAreaB() {
+            return areaB;
+        }
+
+        public String getComment() {
+            return comment;
+        }
+
+        public boolean isContinuation() {
+            return isContinuation;
+        }
+    }
+
+    // Inner interface for CobolLineReader
+    private interface CobolLineReader {
+        List<CobolLine> processLines(String cobolCode, CobolParserParams params) throws IOException;
+    }
+
+    // Inner implementation for CobolLineReader
+    private class CobolLineReaderImpl implements CobolLineReader {
+        @Override
+        public List<CobolLine> processLines(String cobolCode, CobolParserParams params) throws IOException {
+            List<CobolLine> result = new ArrayList<>();
+            CobolSourceFormatEnum format = params.getFormat() != null ? params.getFormat() : CobolSourceFormatEnum.FIXED;
+            Pattern pattern = format.getPattern();
+            boolean strictMode = params.isStrictMode();
+            BufferedReader reader = new BufferedReader(new StringReader(cobolCode));
+            String line;
+            StringBuilder continuationBuffer = new StringBuilder();
+            boolean isContinuation = false;
+            int lineNumber = 0;
+
+            while ((line = reader.readLine()) != null) {
+                lineNumber++;
+                if (line.length() > format.getMaxLineLength() && strictMode) {
+                    throw new IOException(String.format("Line %d exceeds %s format length (%d chars): %s",
+                            lineNumber, format, format.getMaxLineLength(), line));
+                }
+
+                Matcher matcher = pattern.matcher(line);
+                if (!matcher.matches() && !line.trim().isEmpty() && strictMode) {
+                    throw new IOException(String.format("Line %d does not match %s format: %s",
+                            lineNumber, format, line));
+                }
+
+                String sequenceArea = matcher.group(1);
+                String indicatorArea = matcher.group(2);
+                String areaA = matcher.group(3) != null ? matcher.group(3) : "";
+                String areaB = matcher.group(4) != null ? matcher.group(4) : "";
+                String comment = matcher.group(5) != null ? matcher.group(5) : "";
+                boolean nextIsContinuation = false;
+
+                if (format == CobolSourceFormatEnum.FIXED && areaB.endsWith("-") && areaB.contains("\"")) {
+                    nextIsContinuation = true;
+                }
+
+                String content;
+                if (isContinuation) {
+                    continuationBuffer.append(" ").append(areaB.trim());
+                    content = continuationBuffer.toString();
+                } else {
+                    content = areaA + (areaA.isEmpty() || areaB.isEmpty() ? "" : " ") + areaB;
+                    continuationBuffer.setLength(0);
+                    continuationBuffer.append(content);
+                }
+
+                if (!nextIsContinuation) {
+                    if (!content.isEmpty()) {
+                        result.add(new CobolLine(content, sequenceArea, indicatorArea, areaA, areaB, comment, isContinuation));
+                    }
+                    continuationBuffer.setLength(0);
+                }
+
+                isContinuation = nextIsContinuation;
+            }
+
+            return result;
+        }
+    }
+
+    // Inner interface for CobolLineIndicatorProcessor
+    private interface CobolLineIndicatorProcessor {
+        List<CobolLine> processLines(List<CobolLine> lines);
+    }
+
+    // Inner implementation for CobolLineIndicatorProcessor
+    private class CobolLineIndicatorProcessorImpl implements CobolLineIndicatorProcessor {
+        @Override
+        public List<CobolLine> processLines(List<CobolLine> lines) {
+            List<CobolLine> result = new ArrayList<>();
+            for (CobolLine line : lines) {
+                String indicator = line.getIndicatorArea();
+                if (indicator != null && (indicator.equals(CHAR_ASTERISK) || indicator.equals(CHAR_SLASH) ||
+                        indicator.equals(CHAR_D) || indicator.equals(CHAR_D_))) {
+                    continue;
+                }
+                result.add(line);
+            }
+            return result;
+        }
+    }
+
+    // Inner interface for CobolInlineCommentEntriesNormalizer
+    private interface CobolInlineCommentEntriesNormalizer {
+        List<CobolLine> processLines(List<CobolLine> lines);
+    }
+
+    // Inner implementation for CobolInlineCommentEntriesNormalizer
+    private class CobolInlineCommentEntriesNormalizerImpl implements CobolInlineCommentEntriesNormalizer {
+        @Override
+        public List<CobolLine> processLines(List<CobolLine> lines) {
+            List<CobolLine> result = new ArrayList<>();
+            for (CobolLine line : lines) {
+                String content = line.getContent();
+                if (content.contains(COMMENT_TAG)) {
+                    content = content.substring(0, content.indexOf(COMMENT_TAG)).trim();
+                }
+                if (!content.isEmpty()) {
+                    result.add(new CobolLine(content, line.getSequenceArea(), line.getIndicatorArea(),
+                            line.getAreaA(), line.getAreaB(), line.getComment(), line.isContinuation()));
+                }
+            }
+            return result;
+        }
+    }
+
+    // Inner interface for CobolCommentEntriesMarker
+    private interface CobolCommentEntriesMarker {
+        List<CobolLine> processLines(List<CobolLine> lines);
+    }
+
+    // Inner implementation for CobolCommentEntriesMarker
+    private class CobolCommentEntriesMarkerImpl implements CobolCommentEntriesMarker {
+        @Override
+        public List<CobolLine> processLines(List<CobolLine> lines) {
+            List<CobolLine> result = new ArrayList<>();
+            boolean inCommentEntry = false;
+            for (CobolLine line : lines) {
+                String content = line.getContent();
+                if (content.contains(COMMENT_ENTRY_TAG)) {
+                    inCommentEntry = true;
+                    continue;
+                }
+                if (inCommentEntry && format.isCommentEntryMultiLine()) {
+                    if (line.getIndicatorArea().equals(CHAR_ASTERISK) || content.trim().isEmpty()) {
+                        continue;
+                    } else {
+                        inCommentEntry = false;
+                    }
+                }
+                if (!content.isEmpty()) {
+                    result.add(line);
+                }
+            }
+            return result;
+        }
+    }
+
+    // Inner interface for CobolLineWriter
+    private interface CobolLineWriter {
+        String serialize(List<CobolLine> lines);
+    }
+
+    // Inner implementation for CobolLineWriter
+    private class CobolLineWriterImpl implements CobolLineWriter {
+        @Override
+        public String serialize(List<CobolLine> lines) {
+            StringBuilder result = new StringBuilder();
+            for (CobolLine line : lines) {
+                if (!line.getContent().isEmpty()) {
+                    result.append(line.getContent()).append(NEWLINE);
+                }
+            }
+            return result.toString();
+        }
+    }
+
+    // Inner interface for CobolDocumentParser
+    private interface CobolDocumentParser {
+        String processLines(String code, CobolParserParams params) throws IOException;
+    }
+
+    // Inner implementation for CobolDocumentParser
+    private class CobolDocumentParserImpl implements CobolDocumentParser {
+        @Override
+        public String processLines(String code, CobolParserParams params) throws IOException {
+            try {
+                CharStream input = CharStreams.fromString(code);
+                CobolPreprocessorLexer lexer = new CobolPreprocessorLexer(input);
+                CommonTokenStream tokens = new CommonTokenStream(lexer);
+                CobolPreprocessorParser parser = new CobolPreprocessorParser(tokens);
+                parser.removeErrorListeners();
+                parser.addErrorListener(new DiagnosticErrorListener() {
+                    @Override
+                    public void syntaxError(Recognizer<?, ?> recognizer, Object offendingSymbol, int line,
+                            int charPositionInLine, String msg, RecognitionException e) {
+                        String errorMsg = String.format("Syntax error at line %d:%d: %s", line, charPositionInLine, msg);
+                        LOG.error(errorMsg);
+                        if (params.isStrictMode()) {
+                            throw new RuntimeException(errorMsg);
+                        }
+                    }
+                });
+                ParseTree tree = parser.startRule();
+                output = new StringBuilder();
+                visit(tree);
+                return output.toString();
+            } catch (RuntimeException e) {
+                throw new IOException("Failed to parse COBOL code: " + e.getMessage(), e);
+            }
+        }
+    }
+
+    // Inner class for ReplaceRule
+    private static class ReplaceRule {
+        String replaceable;
+        String replacement;
+        Pattern pattern;
+
+        ReplaceRule(String replaceable, String replacement) {
+            this.replaceable = replaceable;
+            this.replacement = replacement;
+            boolean isPseudoText = replaceable.startsWith("==") && replaceable.endsWith("==");
+            String patternStr = isPseudoText ? replaceable.substring(2, replaceable.length() - 2) : replaceable;
+            this.pattern = Pattern.compile(isPseudoText ? Pattern.quote(patternStr) : "\\b" + Pattern.quote(patternStr) + "\\b",
+                    Pattern.CASE_INSENSITIVE);
+        }
+    }
+
+    // Inner class for ReplaceContext
+    private static class ReplaceContext {
+        List<ReplaceRule> rules = new ArrayList<>();
+
+        void addRule(String replaceable, String replacement) {
+            rules.add(new ReplaceRule(replaceable, replacement));
+        }
+
+        String apply(String text) {
+            String result = text;
+            for (ReplaceRule rule : rules) {
+                result = rule.pattern.matcher(result).replaceAll(rule.replacement);
+            }
+            return result;
+        }
+    }
 
     @Override
     public String process(File cobolFile, CobolParserParams params) throws IOException {
-        if (!cobolFile.exists()) {
-            LOG.error("Input file does not exist: {}", cobolFile.getAbsolutePath());
-            throw new IOException("Input file does not exist: " + cobolFile.getAbsolutePath());
+        if (cobolFile == null || !cobolFile.exists()) {
+            String msg = "Input file does not exist: " + (cobolFile != null ? cobolFile.getAbsolutePath() : "null");
+            LOG.error(msg);
+            throw new IOException(msg);
         }
         if (!cobolFile.canRead()) {
-            LOG.error("Input file is not readable: {}", cobolFile.getAbsolutePath());
-            throw new IOException("Input file is not readable: " + cobolFile.getAbsolutePath());
+            String msg = "Input file is not readable: " + cobolFile.getAbsolutePath();
+            LOG.error(msg);
+            throw new IOException(msg);
+        }
+        if (cobolFile.length() == 0 && params.isStrictMode()) {
+            String msg = "Input file is empty: " + cobolFile.getAbsolutePath();
+            LOG.error(msg);
+            throw new IOException(msg);
         }
         Charset charset = params != null && params.getCharset() != null ? params.getCharset() : Charset.defaultCharset();
         LOG.info("Preprocessing file {} with line format {} and charset {}.", cobolFile.getName(),
@@ -45,54 +444,37 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
     }
 
     @Override
-    public String process(String cobolCode, CobolParserParams params) {
+    public String process(String cobolCode, CobolParserParams params) throws IOException {
+        if (cobolCode == null || cobolCode.trim().isEmpty()) {
+            String msg = "Input COBOL code is null or empty";
+            LOG.error(msg);
+            throw new IOException(msg);
+        }
         if (params == null) {
             LOG.warn("CobolParserParams is null, using default settings.");
             params = new CobolParserParamsImpl();
         }
+        strictMode = params.isStrictMode();
         format = params.getFormat() != null ? params.getFormat() : CobolSourceFormatEnum.FIXED;
+        loadCopyBooks(params.getCopyBookDirectories(), params.getCopyBookExtensions(), params.getCharset(), new HashSet<>());
         List<CobolLine> lines = readLines(cobolCode, params);
         List<CobolLine> rewrittenLines = rewriteLines(lines);
         return parseDocument(rewrittenLines, params);
     }
 
-    protected List<CobolLine> readLines(String cobolCode, CobolParserParams params) {
-        return createLineReader().processLines(cobolCode, params);
+    protected List<CobolLine> readLines(String cobolCode, CobolParserParams params) throws IOException {
+        return new CobolLineReaderImpl().processLines(cobolCode, params);
     }
 
     protected List<CobolLine> rewriteLines(List<CobolLine> lines) {
-        List<CobolLine> lineIndicatorProcessedLines = createLineIndicatorProcessor().processLines(lines);
-        List<CobolLine> normalizedInlineCommentEntriesLines = createInlineCommentEntriesNormalizer()
+        List<CobolLine> lineIndicatorProcessedLines = new CobolLineIndicatorProcessorImpl().processLines(lines);
+        List<CobolLine> normalizedInlineCommentEntriesLines = new CobolInlineCommentEntriesNormalizerImpl()
                 .processLines(lineIndicatorProcessedLines);
-        return createCommentEntriesMarker().processLines(normalizedInlineCommentEntriesLines);
+        return new CobolCommentEntriesMarkerImpl().processLines(normalizedInlineCommentEntriesLines);
     }
 
-    protected String parseDocument(List<CobolLine> lines, CobolParserParams params) {
-        return createDocumentParser().processLines(createLineWriter().serialize(lines), params);
-    }
-
-    protected CobolLineReader createLineReader() {
-        return new CobolLineReaderImpl();
-    }
-
-    protected CobolLineIndicatorProcessor createLineIndicatorProcessor() {
-        return new CobolLineIndicatorProcessorImpl();
-    }
-
-    protected CobolInlineCommentEntriesNormalizer createInlineCommentEntriesNormalizer() {
-        return new CobolInlineCommentEntriesNormalizerImpl();
-    }
-
-    protected CobolCommentEntriesMarker createCommentEntriesMarker() {
-        return new CobolCommentEntriesMarkerImpl();
-    }
-
-    protected CobolLineWriter createLineWriter() {
-        return new CobolLineWriterImpl();
-    }
-
-    protected CobolDocumentParser createDocumentParser() {
-        return new CobolDocumentParserImpl();
+    protected String parseDocument(List<CobolLine> lines, CobolParserParams params) throws IOException {
+        return new CobolDocumentParserImpl().processLines(new CobolLineWriterImpl().serialize(lines), params);
     }
 
     // ANTLR Visitor Methods
@@ -114,32 +496,46 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
 
     @Override
     public StringBuilder visitCompilerOption(CobolPreprocessorParser.CompilerOptionContext ctx) {
-        if (ctx.MDECK() != null || ctx.FLAGSTD() != null) {
-            output.append(ctx.getText()).append(NEWLINE);
-        } else {
-            output.append(ctx.getText()).append(NEWLINE);
-        }
+        output.append(ctx.getText()).append(NEWLINE);
         return output;
     }
 
     @Override
     public StringBuilder visitCopyStatement(CobolPreprocessorParser.CopyStatementContext ctx) {
-        // Copybook resolution is handled by CobolDocumentParserImpl
-        output.append(ctx.getText()).append(NEWLINE);
+        String copySource = ctx.copySource().getText().replace("\"", "").replace("'", "").toUpperCase();
+        String copyContent = copyBooks.getOrDefault(copySource, null);
+        if (copyContent == null) {
+            String msg = "Copybook not found: " + copySource;
+            LOG.error(msg);
+            if (strictMode) {
+                throw new RuntimeException(msg);
+            }
+            copyContent = "COPY " + copySource + " content not found.";
+        }
+        if (ctx.replacingPhrase() != null) {
+            copyContent = applyReplacing(copyContent, ctx.replacingPhrase());
+        }
+        output.append(copyContent).append(NEWLINE);
         return output;
     }
 
     @Override
     public StringBuilder visitReplaceByStatement(CobolPreprocessorParser.ReplaceByStatementContext ctx) {
-        // Pass through REPLACE statement for CobolDocumentParserImpl to handle
-        output.append(ctx.getText()).append(NEWLINE);
+        ReplaceContext context = new ReplaceContext();
+        for (CobolPreprocessorParser.ReplaceClauseContext clause : ctx.replaceClause()) {
+            String replaceable = clause.replaceable().getText();
+            String replacement = clause.replacement().getText();
+            context.addRule(replaceable, replacement);
+        }
+        replaceContexts.add(context);
         return output;
     }
 
     @Override
     public StringBuilder visitReplaceOffStatement(CobolPreprocessorParser.ReplaceOffStatementContext ctx) {
-        // Pass through REPLACE OFF statement for CobolDocumentParserImpl to handle
-        output.append(ctx.getText()).append(NEWLINE);
+        if (!replaceContexts.isEmpty()) {
+            replaceContexts.remove(replaceContexts.size() - 1);
+        }
         return output;
     }
 
@@ -153,6 +549,15 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
     @Override
     public StringBuilder visitExecSqlStatement(CobolPreprocessorParser.ExecSqlStatementContext ctx) {
         String text = ctx.getText().replace(EXEC_SQL_TAG, "EXEC SQL").replace(EXEC_END_TAG, "END-EXEC");
+        if (text.contains("INCLUDE") && text.contains("END-EXEC")) {
+            String includeName = text.replaceAll(".*INCLUDE\\s+(\\w+)\\s+END-EXEC.*", "$1").toUpperCase();
+            String copyContent = copyBooks.getOrDefault(includeName, null);
+            if (copyContent != null) {
+                text = copyContent;
+            } else {
+                LOG.warn("EXEC SQL INCLUDE copybook not found: {}", includeName);
+            }
+        }
         output.append(text).append(NEWLINE);
         return output;
     }
@@ -166,23 +571,163 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
 
     @Override
     public StringBuilder visitEjectStatement(CobolPreprocessorParser.EjectStatementContext ctx) {
-        return output; // Skip EJECT
+        return output;
     }
 
     @Override
     public StringBuilder visitSkipStatement(CobolPreprocessorParser.SkipStatementContext ctx) {
-        return output; // Skip SKIP1, SKIP2, SKIP3
+        return output;
     }
 
     @Override
     public StringBuilder visitTitleStatement(CobolPreprocessorParser.TitleStatementContext ctx) {
-        return output; // Skip TITLE
+        return output;
     }
 
     @Override
     public StringBuilder visitCharDataLine(CobolPreprocessorParser.CharDataLineContext ctx) {
-        output.append(ctx.getText()).append(NEWLINE);
+        String text = ctx.getText();
+        for (ReplaceContext context : replaceContexts) {
+            text = context.apply(text);
+        }
+        output.append(text).append(NEWLINE);
         return output;
+    }
+
+    private String applyReplacing(String content, CobolPreprocessorParser.ReplacingPhraseContext replacingPhrase) {
+        String result = content;
+        for (CobolPreprocessorParser.ReplaceClauseContext clause : replacingPhrase.replaceClause()) {
+            String replaceable = clause.replaceable().getText();
+            String replacement = clause.replacement().getText();
+            boolean isPseudoText = replaceable.startsWith("==") && replaceable.endsWith("==");
+            String patternStr = isPseudoText ? replaceable.substring(2, replaceable.length() - 2) : replaceable;
+            Pattern pattern = Pattern.compile(isPseudoText ? Pattern.quote(patternStr) : "\\b" + Pattern.quote(patternStr) + "\\b",
+                    Pattern.CASE_INSENSITIVE);
+            result = pattern.matcher(result).replaceAll(replacement);
+        }
+        return result;
+    }
+
+    private void loadCopyBooks(List<File> directories, List<String> extensions, Charset charset, Set<String> included) throws IOException {
+        copyBooks.clear();
+        for (File dir : directories) {
+            if (!dir.isDirectory()) {
+                LOG.warn("Copybook directory is invalid: {}", dir.getAbsolutePath());
+                continue;
+            }
+            File[] files = dir.listFiles((d, name) -> {
+                for (String ext : extensions) {
+                    if (name.toLowerCase().endsWith("." + ext.toLowerCase())) {
+                        return true;
+                    }
+                }
+                return false;
+            });
+            if (files == null) {
+                continue;
+            }
+            for (File file : files) {
+                String key = file.getName().replaceFirst("[.][^.]+$", "").toUpperCase();
+                if (included.contains(key)) {
+                    LOG.error("Circular copybook dependency detected: {}", key);
+                    if (strictMode) {
+                        throw new IOException("Circular copybook dependency: " + key);
+                    }
+                    continue;
+                }
+                included.add(key);
+                try (BufferedReader reader = new BufferedReader(new FileReader(file, charset))) {
+                    StringBuilder content = new StringBuilder();
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        content.append(line).append(NEWLINE);
+                    }
+                    String copyContent = content.toString();
+                    Pattern copyPattern = Pattern.compile("(?i)^\\s*COPY\\s+(\\w+)\\s*(\\.)?(?:\\s*REPLACING\\s+(.+?)(?:\\.|$))?\\s*$", Pattern.MULTILINE);
+                    Matcher matcher = copyPattern.matcher(copyContent);
+                    StringBuilder resolvedContent = new StringBuilder();
+                    int lastEnd = 0;
+                    while (matcher.find()) {
+                        resolvedContent.append(copyContent, lastEnd, matcher.start());
+                        String nestedCopy = matcher.group(1).toUpperCase();
+                        String replacing = matcher.group(3);
+                        String nestedContent = copyBooks.getOrDefault(nestedCopy, null);
+                        if (nestedContent == null) {
+                            File nestedFile = findCopyBookFile(nestedCopy, directories, extensions);
+                            if (nestedFile != null) {
+                                Set<String> newIncluded = new HashSet<>(included);
+                                loadCopyBook(nestedFile, charset, newIncluded);
+                                nestedContent = copyBooks.get(nestedCopy);
+                            }
+                        }
+                        if (nestedContent == null) {
+                            LOG.warn("Nested copybook not found: {}", nestedCopy);
+                            resolvedContent.append("COPY ").append(nestedCopy).append(" content not found.");
+                        } else {
+                            String processedContent = nestedContent;
+                            if (replacing != null) {
+                                processedContent = applyReplacing(processedContent, parseReplacingPhrase(replacing));
+                            }
+                            resolvedContent.append(processedContent);
+                        }
+                        lastEnd = matcher.end();
+                    }
+                    resolvedContent.append(copyContent, lastEnd, copyContent.length());
+                    copyBooks.put(key, resolvedContent.toString());
+                    LOG.info("Loaded copybook: {}", file.getName());
+                } catch (IOException e) {
+                    LOG.error("Failed to load copybook {}: {}", file.getName(), e.getMessage());
+                    if (strictMode) {
+                        throw e;
+                    }
+                } finally {
+                    included.remove(key);
+                }
+            }
+        }
+    }
+
+    private File findCopyBookFile(String name, List<File> directories, List<String> extensions) {
+        for (File dir : directories) {
+            for (String ext : extensions) {
+                File file = new File(dir, name + "." + ext);
+                if (file.exists() && file.isFile()) {
+                    return file;
+                }
+            }
+        }
+        return null;
+    }
+
+    private void loadCopyBook(File file, Charset charset, Set<String> included) throws IOException {
+        String key = file.getName().replaceFirst("[.][^.]+$", "").toUpperCase();
+        if (included.contains(key)) {
+            throw new IOException("Circular copybook dependency: " + key);
+        }
+        included.add(key);
+        try (BufferedReader reader = new BufferedReader(new FileReader(file, charset))) {
+            StringBuilder content = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                content.append(line).append(NEWLINE);
+            }
+            copyBooks.put(key, content.toString());
+        } finally {
+            included.remove(key);
+        }
+    }
+
+    private CobolPreprocessorParser.ReplacingPhraseContext parseReplacingPhrase(String replacingText) {
+        try {
+            CharStream input = CharStreams.fromString("REPLACING " + replacingText + ".");
+            CobolPreprocessorLexer lexer = new CobolPreprocessorLexer(input);
+            CommonTokenStream tokens = new CommonTokenStream(lexer);
+            CobolPreprocessorParser parser = new CobolPreprocessorParser(tokens);
+            return parser.replacingPhrase();
+        } catch (Exception e) {
+            LOG.warn("Failed to parse replacing phrase: {}", replacingText);
+            return null;
+        }
     }
 
     public static void main(String[] args) throws IOException {
@@ -195,32 +740,13 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
         String outputFile = args[1];
 
         CobolPreprocessorDriver preprocessor = new CobolPreprocessorDriver();
-        CobolParserParams params = new CobolParserParamsImpl() {
-            @Override
-            public CobolSourceFormatEnum getFormat() {
-                return CobolSourceFormatEnum.FIXED;
-            }
-
-            @Override
-            public File getCopyBookDirectory() {
-                return new File("./copybooks");
-            }
-
-            @Override
-            public Charset getCharset() {
-                return Charset.defaultCharset();
-            }
-
-            @Override
-            public List<File> getCopyBookDirectories() {
-                return Arrays.asList(new File("./copybooks"));
-            }
-
-            @Override
-            public List<String> getCopyBookExtensions() {
-                return Arrays.asList("cbl", "cpy");
-            }
-        };
+        CobolParserParams params = new CobolPreprocessorDriver.CobolParserParamsImpl();
+        ((CobolPreprocessorDriver.CobolParserParamsImpl) params).setFormat(CobolSourceFormatEnum.FIXED);
+        ((CobolPreprocessorDriver.CobolParserParamsImpl) params).setCopyBookDirectory(new File("./copybooks"));
+        ((CobolPreprocessorDriver.CobolParserParamsImpl) params).setCopyBookDirectories(Arrays.asList(new File("./copybooks")));
+        ((CobolPreprocessorDriver.CobolParserParamsImpl) params).setCopyBookExtensions(Arrays.asList("cbl", "cpy"));
+        ((CobolPreprocessorDriver.CobolParserParamsImpl) params).setCharset(Charset.defaultCharset());
+        ((CobolPreprocessorDriver.CobolParserParamsImpl) params).setStrictMode(true);
 
         String result = preprocessor.process(new File(inputFile), params);
 
