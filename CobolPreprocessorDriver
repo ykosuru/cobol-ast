@@ -1,0 +1,261 @@
+import org.antlr.v4.runtime.*;
+import org.antlr.v4.runtime.tree.*;
+import io.proleap.cobol.asg.params.CobolParserParams;
+import io.proleap.cobol.preprocessor.CobolPreprocessor;
+import io.proleap.cobol.preprocessor.sub.CobolLine;
+import io.proleap.cobol.preprocessor.sub.document.CobolDocumentParser;
+import io.proleap.cobol.preprocessor.sub.document.impl.CobolDocumentParserImpl;
+import io.proleap.cobol.preprocessor.sub.line.reader.CobolLineReader;
+import io.proleap.cobol.preprocessor.sub.line.reader.impl.CobolLineReaderImpl;
+import io.proleap.cobol.preprocessor.sub.line.rewriter.CobolCommentEntriesMarker;
+import io.proleap.cobol.preprocessor.sub.line.rewriter.impl.CobolCommentEntriesMarkerImpl;
+import io.proleap.cobol.preprocessor.sub.line.rewriter.CobolInlineCommentEntriesNormalizer;
+import io.proleap.cobol.preprocessor.sub.line.rewriter.impl.CobolInlineCommentEntriesNormalizerImpl;
+import io.proleap.cobol.preprocessor.sub.line.rewriter.CobolLineIndicatorProcessor;
+import io.proleap.cobol.preprocessor.sub.line.rewriter.impl.CobolLineIndicatorProcessorImpl;
+import io.proleap.cobol.preprocessor.sub.line.writer.CobolLineWriter;
+import io.proleap.cobol.preprocessor.sub.line.writer.impl.CobolLineWriterImpl;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.*;
+import java.nio.charset.Charset;
+import java.util.*;
+import java.util.regex.Pattern;
+import java.util.regex.Matcher;
+
+public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<StringBuilder> implements CobolPreprocessor {
+    private static final Logger LOG = LoggerFactory.getLogger(CobolPreprocessorDriver.class);
+    private StringBuilder output = new StringBuilder();
+    private boolean inReplaceArea = false;
+    private List<ReplaceRule> replaceRules = new ArrayList<>();
+    private CobolSourceFormatEnum format = CobolSourceFormatEnum.FIXED;
+
+    private static class ReplaceRule {
+        String replaceable;
+        String replacement;
+        Pattern pattern;
+
+        ReplaceRule(String replaceable, String replacement) {
+            this.replaceable = replaceable;
+            this.replacement = replacement;
+            if (replaceable.startsWith("==") && replaceable.endsWith("==")) {
+                String inner = replaceable.substring(2, replaceable.length() - 2);
+                this.pattern = Pattern.compile("\\b" + Pattern.quote(inner) + "\\b", Pattern.CASE_INSENSITIVE);
+            } else {
+                this.pattern = Pattern.compile("\\b" + Pattern.quote(replaceable) + "\\b", Pattern.CASE_INSENSITIVE);
+            }
+        }
+    }
+
+    @Override
+    public String process(File cobolFile, CobolParserParams params) throws IOException {
+        if (!cobolFile.exists()) {
+            LOG.error("Input file does not exist: {}", cobolFile.getAbsolutePath());
+            throw new IOException("Input file does not exist: " + cobolFile.getAbsolutePath());
+        }
+        if (!cobolFile.canRead()) {
+            LOG.error("Input file is not readable: {}", cobolFile.getAbsolutePath());
+            throw new IOException("Input file is not readable: " + cobolFile.getAbsolutePath());
+        }
+        Charset charset = params != null && params.getCharset() != null ? params.getCharset() : Charset.defaultCharset();
+        LOG.info("Preprocessing file {} with line format {} and charset {}.", cobolFile.getName(),
+                params != null && params.getFormat() != null ? params.getFormat() : format, charset);
+        String cobolFileContent = Files.readString(cobolFile.toPath(), charset);
+        return process(cobolFileContent, params);
+    }
+
+    @Override
+    public String process(String cobolCode, CobolParserParams params) {
+        if (params == null) {
+            LOG.warn("CobolParserParams is null, using default settings.");
+            params = new CobolParserParamsImpl();
+        }
+        format = params.getFormat() != null ? params.getFormat() : CobolSourceFormatEnum.FIXED;
+        List<CobolLine> lines = readLines(cobolCode, params);
+        List<CobolLine> rewrittenLines = rewriteLines(lines);
+        return parseDocument(rewrittenLines, params);
+    }
+
+    protected List<CobolLine> readLines(String cobolCode, CobolParserParams params) {
+        return createLineReader().processLines(cobolCode, params);
+    }
+
+    protected List<CobolLine> rewriteLines(List<CobolLine> lines) {
+        List<CobolLine> lineIndicatorProcessedLines = createLineIndicatorProcessor().processLines(lines);
+        List<CobolLine> normalizedInlineCommentEntriesLines = createInlineCommentEntriesNormalizer()
+                .processLines(lineIndicatorProcessedLines);
+        return createCommentEntriesMarker().processLines(normalizedInlineCommentEntriesLines);
+    }
+
+    protected String parseDocument(List<CobolLine> lines, CobolParserParams params) {
+        return createDocumentParser().processLines(createLineWriter().serialize(lines), params);
+    }
+
+    protected CobolLineReader createLineReader() {
+        return new CobolLineReaderImpl();
+    }
+
+    protected CobolLineIndicatorProcessor createLineIndicatorProcessor() {
+        return new CobolLineIndicatorProcessorImpl();
+    }
+
+    protected CobolInlineCommentEntriesNormalizer createInlineCommentEntriesNormalizer() {
+        return new CobolInlineCommentEntriesNormalizerImpl();
+    }
+
+    protected CobolCommentEntriesMarker createCommentEntriesMarker() {
+        return new CobolCommentEntriesMarkerImpl();
+    }
+
+    protected CobolLineWriter createLineWriter() {
+        return new CobolLineWriterImpl();
+    }
+
+    protected CobolDocumentParser createDocumentParser() {
+        return new CobolDocumentParserImpl();
+    }
+
+    // ANTLR Visitor Methods
+    @Override
+    public StringBuilder visitStartRule(CobolPreprocessorParser.StartRuleContext ctx) {
+        for (ParseTree child : ctx.children) {
+            if (!(child instanceof TerminalNode)) {
+                visit(child);
+            }
+        }
+        return output;
+    }
+
+    @Override
+    public StringBuilder visitCompilerOptions(CobolPreprocessorParser.CompilerOptionsContext ctx) {
+        output.append(ctx.getText()).append(NEWLINE);
+        return output;
+    }
+
+    @Override
+    public StringBuilder visitCompilerOption(CobolPreprocessorParser.CompilerOptionContext ctx) {
+        if (ctx.MDECK() != null || ctx.FLAGSTD() != null) {
+            output.append(ctx.getText()).append(NEWLINE);
+        } else {
+            output.append(ctx.getText()).append(NEWLINE);
+        }
+        return output;
+    }
+
+    @Override
+    public StringBuilder visitCopyStatement(CobolPreprocessorParser.CopyStatementContext ctx) {
+        // Copybook resolution is handled by CobolDocumentParserImpl
+        output.append(ctx.getText()).append(NEWLINE);
+        return output;
+    }
+
+    @Override
+    public StringBuilder visitReplaceByStatement(CobolPreprocessorParser.ReplaceByStatementContext ctx) {
+        inReplaceArea = true;
+        replaceRules.clear();
+        for (CobolPreprocessorParser.ReplaceClauseContext clause : ctx.replaceClause()) {
+            String replaceable = clause.replaceable().getText();
+            String replacement = clause.replacement().getText();
+            replaceRules.add(new ReplaceRule(replaceable, replacement));
+        }
+        return output;
+    }
+
+    @Override
+    public StringBuilder visitReplaceOffStatement(CobolPreprocessorParser.ReplaceOffStatementContext ctx) {
+        inReplaceArea = false;
+        replaceRules.clear();
+        return output;
+    }
+
+    @Override
+    public StringBuilder visitExecCicsStatement(CobolPreprocessorParser.ExecCicsStatementContext ctx) {
+        String text = ctx.getText().replace(EXEC_CICS_TAG, "EXEC CICS").replace(EXEC_END_TAG, "END-EXEC");
+        output.append(text).append(NEWLINE);
+        return output;
+    }
+
+    @Override
+    public StringBuilder visitExecSqlStatement(CobolPreprocessorParser.ExecSqlStatementContext ctx) {
+        String text = ctx.getText().replace(EXEC_SQL_TAG, "EXEC SQL").replace(EXEC_END_TAG, "END-EXEC");
+        output.append(text).append(NEWLINE);
+        return output;
+    }
+
+    @Override
+    public StringBuilder visitExecSqlImsStatement(CobolPreprocessorParser.ExecSqlImsStatementContext ctx) {
+        String text = ctx.getText().replace(EXEC_SQLIMS_TAG, "EXEC SQLIMS").replace(EXEC_END_TAG, "END-EXEC");
+        output.append(text).append(NEWLINE);
+        return output;
+    }
+
+    @Override
+    public StringBuilder visitEjectStatement(CobolPreprocessorParser.EjectStatementContext ctx) {
+        return output; // Skip EJECT
+    }
+
+    @Override
+    public StringBuilder visitSkipStatement(CobolPreprocessorParser.SkipStatementContext ctx) {
+        return output; // Skip SKIP1, SKIP2, SKIP3
+    }
+
+    @Override
+    public StringBuilder visitTitleStatement(CobolPreprocessorParser.TitleStatementContext ctx) {
+        return output; // Skip TITLE
+    }
+
+    @Override
+    public StringBuilder visitCharDataLine(CobolPreprocessorParser.CharDataLineContext ctx) {
+        String text = ctx.getText();
+        if (inReplaceArea) {
+            text = applyReplaceRules(text);
+        }
+        output.append(text).append(NEWLINE);
+        return output;
+    }
+
+    private String applyReplaceRules(String text) {
+        String result = text;
+        for (ReplaceRule rule : replaceRules) {
+            result = rule.pattern.matcher(result).replaceAll(rule.replacement);
+        }
+        return result;
+    }
+
+    public static void main(String[] args) throws IOException {
+        if (args.length < 2) {
+            System.err.println("Usage: java CobolPreprocessorDriver <input.cbl> <output.cbl>");
+            System.exit(1);
+        }
+
+        String inputFile = args[0];
+        String outputFile = args[1];
+
+        CobolPreprocessorDriver preprocessor = new CobolPreprocessorDriver();
+        CobolParserParams params = new CobolParserParamsImpl() {
+            @Override
+            public CobolSourceFormatEnum getFormat() {
+                return CobolSourceFormatEnum.FIXED;
+            }
+
+            @Override
+            public File getCopyBookDirectory() {
+                return new File(".");
+            }
+
+            @Override
+            public Charset getCharset() {
+                return Charset.defaultCharset();
+            }
+        };
+
+        String result = preprocessor.process(new File(inputFile), params);
+
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(outputFile))) {
+            writer.write(result);
+        }
+
+        System.out.println("Preprocessing completed. Output written to " + outputFile);
+    }
+}
