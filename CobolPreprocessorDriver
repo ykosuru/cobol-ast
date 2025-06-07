@@ -21,32 +21,11 @@ import org.slf4j.LoggerFactory;
 import java.io.*;
 import java.nio.charset.Charset;
 import java.util.*;
-import java.util.regex.Pattern;
-import java.util.regex.Matcher;
 
 public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<StringBuilder> implements CobolPreprocessor {
     private static final Logger LOG = LoggerFactory.getLogger(CobolPreprocessorDriver.class);
     private StringBuilder output = new StringBuilder();
-    private boolean inReplaceArea = false;
-    private List<ReplaceRule> replaceRules = new ArrayList<>();
     private CobolSourceFormatEnum format = CobolSourceFormatEnum.FIXED;
-
-    private static class ReplaceRule {
-        String replaceable;
-        String replacement;
-        Pattern pattern;
-
-        ReplaceRule(String replaceable, String replacement) {
-            this.replaceable = replaceable;
-            this.replacement = replacement;
-            if (replaceable.startsWith("==") && replaceable.endsWith("==")) {
-                String inner = replaceable.substring(2, replaceable.length() - 2);
-                this.pattern = Pattern.compile("\\b" + Pattern.quote(inner) + "\\b", Pattern.CASE_INSENSITIVE);
-            } else {
-                this.pattern = Pattern.compile("\\b" + Pattern.quote(replaceable) + "\\b", Pattern.CASE_INSENSITIVE);
-            }
-        }
-    }
 
     @Override
     public String process(File cobolFile, CobolParserParams params) throws IOException {
@@ -152,20 +131,15 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
 
     @Override
     public StringBuilder visitReplaceByStatement(CobolPreprocessorParser.ReplaceByStatementContext ctx) {
-        inReplaceArea = true;
-        replaceRules.clear();
-        for (CobolPreprocessorParser.ReplaceClauseContext clause : ctx.replaceClause()) {
-            String replaceable = clause.replaceable().getText();
-            String replacement = clause.replacement().getText();
-            replaceRules.add(new ReplaceRule(replaceable, replacement));
-        }
+        // Pass through REPLACE statement for CobolDocumentParserImpl to handle
+        output.append(ctx.getText()).append(NEWLINE);
         return output;
     }
 
     @Override
     public StringBuilder visitReplaceOffStatement(CobolPreprocessorParser.ReplaceOffStatementContext ctx) {
-        inReplaceArea = false;
-        replaceRules.clear();
+        // Pass through REPLACE OFF statement for CobolDocumentParserImpl to handle
+        output.append(ctx.getText()).append(NEWLINE);
         return output;
     }
 
@@ -207,20 +181,8 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
 
     @Override
     public StringBuilder visitCharDataLine(CobolPreprocessorParser.CharDataLineContext ctx) {
-        String text = ctx.getText();
-        if (inReplaceArea) {
-            text = applyReplaceRules(text);
-        }
-        output.append(text).append(NEWLINE);
+        output.append(ctx.getText()).append(NEWLINE);
         return output;
-    }
-
-    private String applyReplaceRules(String text) {
-        String result = text;
-        for (ReplaceRule rule : replaceRules) {
-            result = rule.pattern.matcher(result).replaceAll(rule.replacement);
-        }
-        return result;
     }
 
     public static void main(String[] args) throws IOException {
@@ -241,12 +203,22 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
 
             @Override
             public File getCopyBookDirectory() {
-                return new File(".");
+                return new File("./copybooks");
             }
 
             @Override
             public Charset getCharset() {
                 return Charset.defaultCharset();
+            }
+
+            @Override
+            public List<File> getCopyBookDirectories() {
+                return Arrays.asList(new File("./copybooks"));
+            }
+
+            @Override
+            public List<String> getCopyBookExtensions() {
+                return Arrays.asList("cbl", "cpy");
             }
         };
 
