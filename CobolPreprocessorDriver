@@ -253,17 +253,16 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
             this.replaceable = replaceable;
             this.replacement = replacement;
             
-            // Handle pseudo-text (==text==) vs regular words
             if (replaceable.startsWith("==") && replaceable.endsWith("==")) {
-                // Pseudo-text: exact match of content between == markers
                 String content = replaceable.substring(2, replaceable.length() - 2);
-                // For pseudo-text, match anywhere in the text (not just word boundaries)
                 this.pattern = Pattern.compile(Pattern.quote(content), Pattern.CASE_INSENSITIVE);
+                System.out.println("DEBUG: Created pseudo-text pattern: " + this.pattern.pattern());
             } else {
-                // Regular word: match whole words only
                 this.pattern = Pattern.compile("\\b" + Pattern.quote(replaceable) + "\\b", Pattern.CASE_INSENSITIVE);
+                System.out.println("DEBUG: Created word boundary pattern: " + this.pattern.pattern());
             }
         }
+        
     }
 
     private static class ReplaceContext {
@@ -347,59 +346,75 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
         String line;
         
         while ((line = reader.readLine()) != null) {
-            line = line.trim();
-            
             // Skip empty lines
-            if (line.isEmpty()) {
+            if (line.trim().isEmpty()) {
                 continue;
             }
             
-            // Skip comment lines (lines starting with *)
-            if (line.startsWith("*")) {
-                continue;
+            // Parse COBOL fixed format: cols 1-6 (seq), 7 (indicator), 8-72 (content), 73-80 (id)
+            if (line.length() >= 72) {
+                String sequenceArea = line.substring(0, 6).trim();
+                String indicatorArea = line.length() > 6 ? line.substring(6, 7) : "";
+                String contentArea = line.length() > 7 ? line.substring(7, 72).trim() : "";
+                String identificationArea = line.length() > 72 ? line.substring(72).trim() : "";
+                
+                // Skip if content area is empty (pure line number lines)
+                if (contentArea.isEmpty()) {
+                    continue;
+                }
+                
+                // Check for comments
+                if (contentArea.startsWith("*")) {
+                    result.add(new CobolLine(contentArea, sequenceArea, indicatorArea, "", contentArea, "", false));
+                } else {
+                    // Regular code line - use only the content area
+                    result.add(new CobolLine(contentArea, sequenceArea, indicatorArea, "", contentArea, "", false));
+                }
+            } else {
+                // Handle short lines
+                String trimmedLine = line.trim();
+                if (!trimmedLine.isEmpty() && !trimmedLine.startsWith("*")) {
+                    result.add(new CobolLine(trimmedLine, "", "", "", trimmedLine, "", false));
+                }
             }
-            
-            // Create a simple CobolLine - just use the content for now
-            result.add(new CobolLine(line, "", "", "", line, "", false));
         }
         
         return result;
     }
+    
 
     protected List<CobolLine> rewriteLines(List<CobolLine> lines) {
-        // Skip the complex line processing for now and just filter comments
         List<CobolLine> result = new ArrayList<>();
         boolean inCommentEntry = false;
         
         for (CobolLine line : lines) {
             String content = line.getContent();
             
-            // Check for comment entry markers
+            // Handle comment entry markers - but preserve them
             if (content.contains("*>>CE")) {
                 inCommentEntry = true;
+                result.add(line); // PRESERVE the comment entry marker
                 continue;
             }
             
-            // Skip lines while in comment entry mode
+            // Handle lines within comment entry
             if (inCommentEntry) {
                 if (content.startsWith("*") || content.trim().isEmpty()) {
+                    result.add(line); // PRESERVE comment content
                     continue;
                 } else {
                     inCommentEntry = false; // Exit comment mode
+                    // Fall through to add the current line
                 }
             }
             
-            // Skip regular comment lines
-            if (content.startsWith("*")) {
-                continue;
-            }
-            
+            // Add all lines (including regular comments)
             result.add(line);
         }
         
         return result;
     }
-
+    
     protected String parseDocument(List<CobolLine> lines, CobolParserParams params) throws IOException {
         String serializedLines = new CobolLineWriterImpl().serialize(lines);
         return new CobolDocumentParserImpl().processLines(serializedLines, params);
@@ -424,16 +439,56 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
         return output;
     }
 
+    
     @Override
-    public StringBuilder visitCompilerOptions(CobolPreprocessorParser.CompilerOptionsContext ctx) {
-        // Reconstruct with proper spacing between tokens
+    public StringBuilder visitCommentLine(CobolPreprocessorParser.CommentLineContext ctx) {
+        // Preserve all comment content exactly as-is
+        String commentText = ctx.getText().trim();
+        output.append(commentText).append(NEWLINE);
+        return output;
+    }
+
+    @Override
+    public StringBuilder visitCharDataLine(CobolPreprocessorParser.CharDataLineContext ctx) {
         StringBuilder lineBuilder = new StringBuilder();
         
         for (int i = 0; i < ctx.getChildCount(); i++) {
             ParseTree child = ctx.getChild(i);
             String token = child.getText();
             
-            // Add space before token (except for first token and punctuation)
+            if (i > 0 && !token.trim().isEmpty() && !token.equals(".") && !token.equals(",")) {
+                lineBuilder.append(" ");
+            }
+            lineBuilder.append(token);
+        }
+        
+        String text = lineBuilder.toString().trim();
+        
+        // Check if this is a comment line - if so, preserve as-is
+        if (text.startsWith("*")) {
+            output.append(text).append(NEWLINE);
+            return output;
+        }
+        
+        // Apply REPLACE transformations only to non-comment lines
+        String originalText = text;
+        for (ReplaceContext context : replaceContexts) {
+            text = context.apply(text);
+        }
+        
+        if (!text.isEmpty()) {
+            output.append(text).append(NEWLINE);
+        }
+        return output;
+    }
+    @Override
+    public StringBuilder visitCompilerOptions(CobolPreprocessorParser.CompilerOptionsContext ctx) {
+        StringBuilder lineBuilder = new StringBuilder();
+        
+        for (int i = 0; i < ctx.getChildCount(); i++) {
+            ParseTree child = ctx.getChild(i);
+            String token = child.getText();
+            
             if (i > 0 && !token.trim().isEmpty() && !token.equals(".") && !token.equals(",")) {
                 lineBuilder.append(" ");
             }
@@ -465,19 +520,25 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
             if (strictMode) {
                 throw new RuntimeException(msg);
             }
-            copyContent = "* COPY " + copySource + " content not found.";
+            // Instead of adding a comment, preserve the COPY statement
+            output.append("COPY ").append(copySource).append(".").append(NEWLINE);
+            return output;
         }
         
-        // Apply REPLACING if present
-        if (ctx.replacingPhrase() != null && !ctx.replacingPhrase().isEmpty()) {
-            copyContent = applyReplacing(copyContent, ctx.replacingPhrase().get(0));
-        }
-        
-        // Process each line of copybook content to preserve formatting
-        String[] lines = copyContent.split("\\r?\\n");
-        for (String line : lines) {
-            if (!line.trim().isEmpty()) {
-                output.append(line.trim()).append(NEWLINE);
+        // Process the copybook content through the preprocessor recursively
+        try {
+            // Create a temporary params object if we don't have access to the current one
+            CobolParserParamsImpl tempParams = new CobolParserParamsImpl();
+            tempParams.setStrictMode(this.strictMode);
+            tempParams.setFormat(this.format);
+            
+            CobolDocumentParserImpl parser = new CobolDocumentParserImpl();
+            String processedContent = parser.processLines(copyContent, tempParams);
+            output.append(processedContent);
+        } catch (IOException e) {
+            System.out.println("Error processing copybook: " + e.getMessage());
+            if (strictMode) {
+                throw new RuntimeException(e);
             }
         }
         
@@ -510,48 +571,168 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
 
     @Override
     public StringBuilder visitExecCicsStatement(CobolPreprocessorParser.ExecCicsStatementContext ctx) {
-        // Reconstruct EXEC CICS statement with proper spacing
-        StringBuilder lineBuilder = new StringBuilder();
+        StringBuilder cicsBuilder = new StringBuilder();
+        cicsBuilder.append("EXEC CICS");
         
-        for (int i = 0; i < ctx.getChildCount(); i++) {
-            ParseTree child = ctx.getChild(i);
-            String token = child.getText();
-            
-            // Add space before token (except for first token and punctuation)
-            if (i > 0 && !token.trim().isEmpty() && !token.equals(".") && !token.equals(",")) {
-                lineBuilder.append(" ");
+        if (ctx.charData() != null) {
+            String cicsContent = reconstructCharData(ctx.charData());
+            if (!cicsContent.trim().isEmpty()) {
+                cicsBuilder.append(" ").append(cicsContent);
             }
-            lineBuilder.append(token);
         }
         
-        String text = lineBuilder.toString().trim();
-        
-        // Handle special EXEC tags transformation
-        if (text.contains(EXEC_CICS_TAG)) {
-            text = text.replace(EXEC_CICS_TAG, "EXEC CICS");
-        }
-        if (text.contains(EXEC_END_TAG)) {
-            text = text.replace(EXEC_END_TAG, "END-EXEC");
+        cicsBuilder.append(" END-EXEC");
+        if (ctx.DOT() != null) {
+            cicsBuilder.append(".");
         }
         
-        output.append(text).append(NEWLINE);
+        output.append(cicsBuilder.toString().trim()).append(NEWLINE);
         return output;
     }
 
     @Override
     public StringBuilder visitExecSqlStatement(CobolPreprocessorParser.ExecSqlStatementContext ctx) {
-        String text = ctx.getText().replace(EXEC_SQL_TAG, "EXEC SQL").replace(EXEC_END_TAG, "END-EXEC");
-        if (text.contains("INCLUDE") && text.contains("END-EXEC")) {
-            String includeName = text.replaceAll(".*INCLUDE\\s+(\\w+)\\s+END-EXEC.*", "$1").toUpperCase();
-            String copyContent = copyBooks.getOrDefault(includeName, null);
-            if (copyContent != null) {
-                text = copyContent;
-            } else {
-                System.out.println("EXEC SQL INCLUDE copybook not found: " + includeName);
+        StringBuilder sqlBuilder = new StringBuilder();
+        sqlBuilder.append("EXEC SQL");
+        
+        if (ctx.charDataSql() != null) {
+            String sqlContent = reconstructCharDataSql(ctx.charDataSql());
+            // Filter out line numbers and sequence IDs from SQL content
+            sqlContent = cleanCobolLineArtifacts(sqlContent);
+            
+            if (!sqlContent.trim().isEmpty()) {
+                sqlBuilder.append(" ").append(sqlContent);
             }
         }
-        output.append(text).append(NEWLINE);
+        
+        sqlBuilder.append(" END-EXEC");
+        if (ctx.DOT() != null) {
+            sqlBuilder.append(".");
+        }
+        
+        output.append(sqlBuilder.toString().trim()).append(NEWLINE);
         return output;
+    }
+
+    /**
+     * Removes COBOL line numbers and sequence identifiers from content
+     */
+    private String cleanCobolLineArtifacts(String content) {
+        // Remove 6-digit line numbers and 8-character sequence IDs
+        String cleaned = content.replaceAll("\\b\\d{6}\\b", "")  // Remove 6-digit numbers
+                            .replaceAll("\\b[A-Z0-9]{8}\\b", "")  // Remove 8-char IDs
+                            .replaceAll("\\s+", " ")  // Normalize whitespace
+                            .trim();
+        return cleaned;
+    }
+
+    /**
+     * Reconstructs charDataSql with proper spacing and formatting
+     */
+    private String reconstructCharDataSql(CobolPreprocessorParser.CharDataSqlContext ctx) {
+        StringBuilder content = new StringBuilder();
+        
+        for (int i = 0; i < ctx.getChildCount(); i++) {
+            ParseTree child = ctx.getChild(i);
+            String token = child.getText().trim();
+            
+            // Skip empty tokens and newlines
+            if (token.isEmpty() || token.equals("\n") || token.equals("\r\n")) {
+                continue;
+            }
+            
+            // Handle special tokens
+            if (token.equals("COPY") || token.equals("REPLACE")) {
+                // Add space before SQL keywords
+                if (content.length() > 0) {
+                    content.append(" ");
+                }
+                content.append(token);
+            } else if (isNewlineToken(child)) {
+                // Convert newlines to spaces in SQL content
+                if (content.length() > 0 && !content.toString().endsWith(" ")) {
+                    content.append(" ");
+                }
+            } else {
+                // Regular content
+                if (content.length() > 0 && !token.equals(".") && !token.equals(",") && 
+                    !content.toString().endsWith(" ")) {
+                    content.append(" ");
+                }
+                content.append(token);
+            }
+        }
+        
+        return content.toString().trim();
+    }
+
+    /**
+     * Reconstructs charData (for EXEC CICS) with proper spacing and formatting
+     */
+    private String reconstructCharData(CobolPreprocessorParser.CharDataContext ctx) {
+        StringBuilder content = new StringBuilder();
+        
+        for (int i = 0; i < ctx.getChildCount(); i++) {
+            ParseTree child = ctx.getChild(i);
+            String token = child.getText().trim();
+            
+            // Skip empty tokens and newlines
+            if (token.isEmpty() || token.equals("\n") || token.equals("\r\n")) {
+                continue;
+            }
+            
+            // Handle newline tokens by converting to spaces
+            if (isNewlineToken(child)) {
+                if (content.length() > 0 && !content.toString().endsWith(" ")) {
+                    content.append(" ");
+                }
+            } else {
+                // Regular content - add space before token if needed
+                if (content.length() > 0 && !token.equals(".") && !token.equals(",") && 
+                    !content.toString().endsWith(" ")) {
+                    content.append(" ");
+                }
+                content.append(token);
+            }
+        }
+        
+        return content.toString().trim();
+    }
+
+    /**
+     * Extracts the copybook name from EXEC SQL INCLUDE statement
+     */
+    private String extractIncludeName(String text) {
+        // Pattern to match: EXEC SQL INCLUDE copybook-name END-EXEC
+        Pattern includePattern = Pattern.compile(
+            "EXEC\\s+SQL\\s+INCLUDE\\s+([a-zA-Z0-9\\-_]+)\\s+END-EXEC", 
+            Pattern.CASE_INSENSITIVE
+        );
+        
+        Matcher matcher = includePattern.matcher(text);
+        if (matcher.find()) {
+            return matcher.group(1).toUpperCase();
+        }
+        
+        // Fallback to original regex if the above doesn't work
+        try {
+            return text.replaceAll(".*INCLUDE\\s+(\\w+)\\s+END-EXEC.*", "$1").toUpperCase();
+        } catch (Exception e) {
+            System.out.println("Could not extract INCLUDE name from: " + text);
+            return null;
+        }
+    }
+
+    /**
+     * Helper method to check if a parse tree node represents a newline
+     */
+    private boolean isNewlineToken(ParseTree node) {
+        if (node instanceof TerminalNode) {
+            TerminalNode terminal = (TerminalNode) node;
+            int tokenType = terminal.getSymbol().getType();
+            return tokenType == CobolPreprocessorLexer.NEWLINE;
+        }
+        return false;
     }
 
     @Override
@@ -576,50 +757,6 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
         return output;
     }
 
-    @Override
-    public StringBuilder visitCharDataLine(CobolPreprocessorParser.CharDataLineContext ctx) {
-        // Get individual tokens and reconstruct with proper spacing
-        StringBuilder lineBuilder = new StringBuilder();
-        
-        for (int i = 0; i < ctx.getChildCount(); i++) {
-            ParseTree child = ctx.getChild(i);
-            String token = child.getText();
-            
-            // Add space before token (except for first token and punctuation)
-            if (i > 0 && !token.trim().isEmpty() && !token.equals(".") && !token.equals(",")) {
-                lineBuilder.append(" ");
-            }
-            lineBuilder.append(token);
-        }
-        
-        String text = lineBuilder.toString().trim();
-        
-        // Skip if this line is a comment or empty
-        if (text.isEmpty() || text.startsWith("*")) {
-            return output;
-        }
-        
-        System.out.println("DEBUG: Processing line: '" + text + "'");
-        System.out.println("DEBUG: Active REPLACE contexts: " + replaceContexts.size());
-        
-        // Apply active REPLACE transformations
-        String originalText = text;
-        for (int i = 0; i < replaceContexts.size(); i++) {
-            ReplaceContext context = replaceContexts.get(i);
-            text = context.apply(text);
-            System.out.println("DEBUG: After REPLACE context " + i + ": '" + text + "'");
-        }
-        
-        if (!originalText.equals(text)) {
-            System.out.println("DEBUG: Text changed from '" + originalText + "' to '" + text + "'");
-        }
-        
-        // Only append non-empty lines
-        if (!text.isEmpty()) {
-            output.append(text).append(NEWLINE);
-        }
-        return output;
-    }
 
     private String applyReplacing(String content, CobolPreprocessorParser.ReplacingPhraseContext replacingPhrase) {
         if (replacingPhrase == null) {
