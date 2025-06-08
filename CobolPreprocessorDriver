@@ -467,8 +467,6 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
         
         return output;
     }
-
-
     @Override
     public StringBuilder visitCharDataLine(CobolPreprocessorParser.CharDataLineContext ctx) {
         StringBuilder lineBuilder = new StringBuilder();
@@ -587,6 +585,27 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
             replaceContexts.remove(replaceContexts.size() - 1);
             System.out.println("DEBUG: Remaining REPLACE contexts: " + replaceContexts.size());
         }
+        return output;
+    }
+
+    @Override
+    public StringBuilder visitExecParamStatement(CobolPreprocessorParser.ExecParamStatementContext ctx) {
+        StringBuilder paramBuilder = new StringBuilder();
+        paramBuilder.append("EXEC PARAM");
+        
+        if (ctx.charData() != null) {
+            String paramContent = reconstructCharData(ctx.charData());
+            if (!paramContent.trim().isEmpty()) {
+                paramBuilder.append(" ").append(paramContent);
+            }
+        }
+        
+        paramBuilder.append(" END-EXEC");
+        if (ctx.DOT() != null) {
+            paramBuilder.append(".");
+        }
+        
+        output.append(paramBuilder.toString().trim()).append(NEWLINE);
         return output;
     }
 
