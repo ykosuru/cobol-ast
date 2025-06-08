@@ -1,3 +1,4 @@
+
 /*
 * COBOL Preprocessor Grammar for ANTLR4
 *
@@ -146,11 +147,7 @@ compilerOption
 // exec cics statement
 
 execCicsStatement
-   : EXEC CICS execCicsBody END_EXEC DOT?
-   ;
-
-execCicsBody
-   : (cobolWord | literal | LPARENCHAR | RPARENCHAR | WS)*
+   : EXEC CICS charData END_EXEC DOT?
    ;
 
 // exec sql statement
@@ -264,125 +261,6 @@ literal
 filename
    : FILENAME
    ;
-
-
-// YK: Add missing EXEC statement types
-execAdoStatement
-   : EXEC ADO charData END_EXEC DOT?
-   ;
-
-execWebStatement  
-   : EXEC WEB charData END_EXEC DOT?
-   ;
-
-execXmlStatement
-   : EXEC XML charData END_EXEC DOT?
-   ;
-
-execJsonStatement
-   : EXEC JSON charData END_EXEC DOT?
-   ;
-
-execDliStatement
-   : EXEC DLI charData END_EXEC DOT?
-   ;
-
-// YK: Add compiler directive extensions
-compilerDirective
-   : SOURCEFORMAT (FIXED | FREE | VARIABLE)
-   | TURN ecOption (ON | OFF)
-   | SET CONSTANT constantName literal
-   ;
-
-constantName
-   : IDENTIFIER
-   ;
-
-
-ecOption
-   : EC_BOUND_SUBSCRIPT | EC_BOUND_REF_MOD | EC_BOUND_ODO | EC_RANGE_PERFORM
-   ;
-
-// YK: Enhanced COPY statement with IBM extensions
-copyStatementEnhanced
-   : COPY copySource 
-     (NEWLINE* (directoryPhrase | familyPhrase | replacingPhraseEnhanced | SUPPRESS | PREFIX literal | SUFFIX literal))* 
-     NEWLINE* DOT
-   ;
-
-replacingPhraseEnhanced
-   : REPLACING NEWLINE* replaceClauseEnhanced (NEWLINE+ replaceClauseEnhanced)*
-   ;
-
-replaceClauseEnhanced
-   : (LEADING | TRAILING)? replaceable NEWLINE* BY NEWLINE* replacement (NEWLINE* directoryPhrase)? (NEWLINE* familyPhrase)?
-   ;
-
-// YK: Add BASIS/INSERT statements for IBM library management  
-basisStatement
-   : BASIS copySource DOT
-   ;
-
-insertStatement
-   : INSERT copySource DOT
-   ;
-
-deleteStatement
-   : DELETE sequenceNumbers DOT
-   ;
-
-sequenceNumbers
-   : NUMERICLITERAL (THROUGH | THRU)? NUMERICLITERAL?
-   ;
-
-//YK: Add conditional compilation support
-conditionalCompilation
-   : ifDefDirective | ifNDefDirective | endIfDirective
-   ;
-
-ifDefDirective
-   : IFDEF conditionalName
-   ;
-
-ifNDefDirective  
-   : IFNDEF conditionalName
-   ;
-
-endIfDirective
-   : ENDIF
-   ;
-
-conditionalName
-   : IDENTIFIER
-   ;
-
-//YK: Enhanced startRule to include new constructs
-startRuleEnhanced
-   : (compilerOptions 
-     | compilerDirective
-     | copyStatement 
-     | copyStatementEnhanced
-     | basisStatement
-     | insertStatement  
-     | deleteStatement
-     | conditionalCompilation
-     | execCicsStatement 
-     | execSqlStatement 
-     | execSqlImsStatement
-     | execAdoStatement
-     | execWebStatement
-     | execXmlStatement
-     | execJsonStatement
-     | execDliStatement
-     | replaceOffStatement 
-     | replaceArea 
-     | ejectStatement 
-     | skipStatement 
-     | titleStatement 
-     | charDataLine 
-     | NEWLINE)* EOF
-   ;
-
 
 // keywords ----------------------------------
 
@@ -710,38 +588,6 @@ XREF : X R E F;
 YEARWINDOW : Y E A R W I N D O W;
 YW : Y W;
 ZWB : Z W B;
-
-//YK: Add new Lexer rules for enhanced constructs
-
-ADO : A D O;
-BASIS : B A S I S;
-CONSTANT : C O N S T A N T;
-DELETE : D E L E T E;
-ENDIF : E N D I F;
-FIXED : F I X E D;
-FREE : F R E E;  
-IFDEF : I F D E F;
-IFNDEF : I F N D E F;
-INSERT : I N S E R T;
-JSON : J S O N;
-LEADING : L E A D I N G;
-PREFIX : P R E F I X;
-SET : S E T;
-SOURCEFORMAT : S O U R C E F O R M A T;
-SUFFIX : S U F F I X;
-THROUGH : T H R O U G H;
-THRU : T H R U;
-TRAILING : T R A I L I N G;
-TURN : T U R N;
-VARIABLE : V A R I A B L E;
-WEB : W E B;
-XML : X M L;
-
-// EC (Error Checking) options
-EC_BOUND_SUBSCRIPT : E C '-' B O U N D '-' S U B S C R I P T;
-EC_BOUND_REF_MOD : E C '-' B O U N D '-' R E F '-' M O D;
-EC_BOUND_ODO : E C '-' B O U N D '-' O D O;
-EC_RANGE_PERFORM : E C '-' R A N G E '-' P E R F O R M;
 
 C_CHAR : C;
 D_CHAR : D;
