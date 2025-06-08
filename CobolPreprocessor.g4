@@ -1,15 +1,23 @@
-
 /*
 * COBOL Preprocessor Grammar for ANTLR4
 *
-* This is a preprocessor grammar for COBOL, which is part of the COBOL 
-* parser at https://github.com/uwol/proleap-cobol-parser.
 */
 
 grammar CobolPreprocessor;
 
 startRule
-   : (compilerOptions | copyStatement | execCicsStatement | execSqlStatement | execSqlImsStatement | replaceOffStatement | replaceArea | ejectStatement | skipStatement | titleStatement | charDataLine | NEWLINE)* EOF
+   : (compilerOptions | copyStatement | execCicsStatement | execSqlStatement | execSqlImsStatement | replaceOffStatement | replaceArea | ejectStatement | skipStatement | titleStatement | commentLine | charDataLine | NEWLINE)* EOF
+   ;
+
+// comment handling
+commentLine
+   : COMMENTTAG NEWLINE
+   | ASTERISK NEWLINE
+   | COMMENTENTRY NEWLINE*
+   ;
+
+commentContent
+   : // This rule is no longer needed since comments include their content
    ;
 
 // compiler options
@@ -320,6 +328,34 @@ charDataKeyword
 
 // lexer rules --------------------------------------------------------------------------------
 
+// case insensitive chars - MUST be defined first
+fragment A:('a'|'A');
+fragment B:('b'|'B');
+fragment C:('c'|'C');
+fragment D:('d'|'D');
+fragment E:('e'|'E');
+fragment F:('f'|'F');
+fragment G:('g'|'G');
+fragment H:('h'|'H');
+fragment I:('i'|'I');
+fragment J:('j'|'J');
+fragment K:('k'|'K');
+fragment L:('l'|'L');
+fragment M:('m'|'M');
+fragment N:('n'|'N');
+fragment O:('o'|'O');
+fragment P:('p'|'P');
+fragment Q:('q'|'Q');
+fragment R:('r'|'R');
+fragment S:('s'|'S');
+fragment T:('t'|'T');
+fragment U:('u'|'U');
+fragment V:('v'|'V');
+fragment W:('w'|'W');
+fragment X:('x'|'X');
+fragment Y:('y'|'Y');
+fragment Z:('z'|'Z');
+
 // keywords
 ADATA : A D A T A;
 ADV : A D V;
@@ -603,12 +639,15 @@ U_CHAR : U;
 W_CHAR : W;
 X_CHAR : X;
 
-
 // symbols
-COMMENTTAG : '*>';
 COMMACHAR : ',';
 DOT : '.';
 DOUBLEEQUALCHAR : '==';
+
+// Comment tokens - must come before general TEXT to match properly
+COMMENTTAG : '*>' ~[\r\n]*;
+COMMENTENTRY : '*>>CE' ~[\r\n]*;
+ASTERISK : '*' ~[\r\n]*;
 
 // literals
 NONNUMERICLITERAL : STRINGLITERAL | HEXNUMBER;
@@ -627,38 +666,8 @@ fragment STRINGLITERAL :
 IDENTIFIER : [a-zA-Z0-9]+ ([-_]+ [a-zA-Z0-9]+)*;
 FILENAME : [a-zA-Z0-9]+ '.' [a-zA-Z0-9]+;
 
-
 // whitespace, line breaks, comments, ...
 NEWLINE : '\r'? '\n';
-COMMENTLINE : COMMENTTAG ~('\n' | '\r')* -> channel(HIDDEN);
 WS : [ \t\f;]+ -> channel(HIDDEN);
 TEXT : ~('\n' | '\r');
 
-
-// case insensitive chars
-fragment A:('a'|'A');
-fragment B:('b'|'B');
-fragment C:('c'|'C');
-fragment D:('d'|'D');
-fragment E:('e'|'E');
-fragment F:('f'|'F');
-fragment G:('g'|'G');
-fragment H:('h'|'H');
-fragment I:('i'|'I');
-fragment J:('j'|'J');
-fragment K:('k'|'K');
-fragment L:('l'|'L');
-fragment M:('m'|'M');
-fragment N:('n'|'N');
-fragment O:('o'|'O');
-fragment P:('p'|'P');
-fragment Q:('q'|'Q');
-fragment R:('r'|'R');
-fragment S:('s'|'S');
-fragment T:('t'|'T');
-fragment U:('u'|'U');
-fragment V:('v'|'V');
-fragment W:('w'|'W');
-fragment X:('x'|'X');
-fragment Y:('y'|'Y');
-fragment Z:('z'|'Z');
