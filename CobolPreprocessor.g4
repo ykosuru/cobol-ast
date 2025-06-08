@@ -6,7 +6,7 @@
 grammar CobolPreprocessor;
 
 startRule
-   : (compilerOptions | copyStatement | execCicsStatement | execSqlStatement | execSqlImsStatement | replaceOffStatement | replaceArea | ejectStatement | skipStatement | titleStatement | commentLine | charDataLine | NEWLINE)* EOF
+   : (compilerOptions | copyStatement | execCicsStatement | execSqlStatement | execSqlImsStatement | execParamStatement | replaceOffStatement | replaceArea | ejectStatement | skipStatement | titleStatement | commentLine | charDataLine | NEWLINE)* EOF
    ;
 
 // comment handling
@@ -171,6 +171,12 @@ execSqlImsStatement
    : EXEC SQLIMS charData END_EXEC DOT?
    ;
 
+// exec param statement
+
+execParamStatement
+   : EXEC PARAM charData END_EXEC DOT?
+   ;
+
 // copy statement
 
 copyStatement
@@ -313,7 +319,7 @@ charDataKeyword
    | NSEQ | NSYMBOL | NS
    | NUM | NUMBER | NUMPROC
    | OBJ | OBJECT | ON | OF | OFF | OFFSET | OPMARGINS | OPSEQUENCE | OPTIMIZE | OP | OPT | OPTFILE | OPTIONS | OUT | OUTDD
-   | PFD | PGMN | PGMNAME | PPTDBG | PROCESS | PROLOG
+   | PARAM | PFD | PGMN | PGMNAME | PPTDBG | PROCESS | PROLOG
    | QUOTE
    | RENT | REPLACING | RMODE
    | SEQ | SEQUENCE | SEP | SEPARATE | SHORT | SIZE | SOURCE | SP | SPACE | SPIE | SQL | SQLC | SQLCCSID | SS | SSR | SSRANGE | STD | SYSEIB | SZ
@@ -569,6 +575,7 @@ OPTIMIZE : O P T I M I Z E;
 OPTIONS : O P T I O N S;
 OUT : O U T;
 OUTDD : O U T D D;
+PARAM : P A R A M;
 PFD : P F D;
 PPTDBG : P P T D B G;
 PGMN : P G M N;
@@ -673,4 +680,3 @@ FILENAME : [a-zA-Z0-9]+ '.' [a-zA-Z0-9]+;
 NEWLINE : '\r'? '\n';
 WS : [ \t\f;]+ -> channel(HIDDEN);
 TEXT : ~('\n' | '\r');
-
