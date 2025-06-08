@@ -14,6 +14,7 @@ commentLine
    : COMMENTTAG NEWLINE
    | ASTERISK NEWLINE
    | COMMENTENTRY NEWLINE*
+   | SLASHCOMMENT NEWLINE  // Add support for slash comments
    ;
 
 commentContent
@@ -645,9 +646,11 @@ DOT : '.';
 DOUBLEEQUALCHAR : '==';
 
 // Comment tokens - must come before general TEXT to match properly
+// ORDER MATTERS HERE - more specific patterns first
 COMMENTTAG : '*>' ~[\r\n]*;
 COMMENTENTRY : '*>>CE' ~[\r\n]*;
 ASTERISK : '*' ~[\r\n]*;
+SLASHCOMMENT : '/' ~[\r\n]*;  // Add this new token for slash comments
 
 // literals
 NONNUMERICLITERAL : STRINGLITERAL | HEXNUMBER;
