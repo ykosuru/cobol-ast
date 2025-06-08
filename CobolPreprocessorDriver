@@ -6,7 +6,7 @@ import java.nio.file.*;
 import java.util.*;
 import java.util.regex.*;
 
-public class CobolPreProcessorDriver extends CobolPreprocessorBaseVisitor<StringBuilder> {
+public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<StringBuilder> {
     private StringBuilder output = new StringBuilder();
     private static final String NEWLINE = "\n";
     private static final String EXEC_CICS_TAG = "*>>EXECCICS";
@@ -233,7 +233,7 @@ public class CobolPreProcessorDriver extends CobolPreprocessorBaseVisitor<String
                 }
                 
                 CobolPreprocessorParser.StartRuleContext tree = parser.startRule();
-                CobolPreProcessorDriver visitor = new CobolPreProcessorDriver();
+                CobolPreprocessorDriver visitor = new CobolPreprocessorDriver();
                 visitor.copyBooks = copyBooks; // Share copybooks
                 visitor.replaceContexts = replaceContexts; // Share replace contexts
                 visitor.strictMode = params.isStrictMode();
@@ -320,14 +320,10 @@ public class CobolPreProcessorDriver extends CobolPreprocessorBaseVisitor<String
         System.out.println(String.format("Preprocessing file %s with line format %s and charset %s",
                 cobolFile.getName(), params != null && params.getFormat() != null ? params.getFormat() : format, charset));
         String cobolFileContent = Files.readString(cobolFile.toPath(), charset);
-        
-        // FIX: Process the string content and add COBOL structure
-        String preprocessedResult = processString(cobolFileContent, params);
-        return addCobolStructure(preprocessedResult);
+        return process(cobolFileContent, params);
     }
-    
-    // 1a. FIX: Extract string processing logic into separate method
-    public String processString(String cobolCode, CobolParserParams params) throws IOException {
+
+    public String process(String cobolCode, CobolParserParams params) throws IOException {
         if (cobolCode == null || cobolCode.trim().isEmpty()) {
             String msg = "Input COBOL code is null or empty";
             System.out.println(msg);
@@ -344,113 +340,6 @@ public class CobolPreProcessorDriver extends CobolPreprocessorBaseVisitor<String
         List<CobolLine> rewrittenLines = rewriteLines(lines);
         return parseDocument(lines, params);
     }
-    private String addCobolStructure(String preprocessedCode) {
-        StringBuilder result = new StringBuilder();
-        String[] lines = preprocessedCode.split("\\r?\\n");
-        
-        boolean hasIdentification = false;
-        boolean hasDataDivision = false;
-        boolean hasProcedureDivision = false;
-        boolean hasWorkingStorage = false;
-        
-        // Check what's already present
-        for (String line : lines) {
-            if (line.contains("IDENTIFICATION DIVISION")) hasIdentification = true;
-            if (line.contains("DATA DIVISION")) hasDataDivision = true;
-            if (line.contains("PROCEDURE DIVISION")) hasProcedureDivision = true;
-            if (line.contains("WORKING-STORAGE")) hasWorkingStorage = true;
-        }
-        
-        // Add missing structure
-        if (!hasIdentification) {
-            result.append("IDENTIFICATION DIVISION.").append(NEWLINE);
-            result.append("PROGRAM-ID. PREPROCESSED-PROGRAM.").append(NEWLINE);
-            result.append(NEWLINE);
-        }
-        
-        if (!hasDataDivision && hasWorkingStorage) {
-            result.append("DATA DIVISION.").append(NEWLINE);
-        }
-        
-        boolean inProcedureSection = false;
-        for (String line : lines) {
-            String trimmedLine = line.trim();
-            
-            // Skip CBL directives in final output (they're compiler directives)
-            if (trimmedLine.startsWith("CBL ")) {
-                continue;
-            }
-            
-            // Add PROCEDURE DIVISION before first executable statement
-            if (!hasProcedureDivision && !inProcedureSection && isExecutableStatement(trimmedLine)) {
-                if (hasWorkingStorage) {
-                    result.append(NEWLINE);
-                }
-                result.append("PROCEDURE DIVISION.").append(NEWLINE);
-                inProcedureSection = true;
-                hasProcedureDivision = true;
-            }
-            
-            if (!trimmedLine.isEmpty()) {
-                result.append(trimmedLine).append(NEWLINE);
-            }
-        }
-        
-        // Add STOP RUN if we added PROCEDURE DIVISION
-        if (hasProcedureDivision && inProcedureSection) {
-            result.append("STOP RUN.").append(NEWLINE);
-        }
-        
-        return result.toString();
-    }
-    
-    private boolean isExecutableStatement(String line) {
-        String upperLine = line.toUpperCase().trim();
-        return upperLine.startsWith("MOVE ") ||
-               upperLine.startsWith("EXEC ") ||
-               upperLine.startsWith("CALL ") ||
-               upperLine.startsWith("IF ") ||
-               upperLine.startsWith("PERFORM ") ||
-               upperLine.startsWith("ADD ") ||
-               upperLine.startsWith("SUBTRACT ") ||
-               upperLine.startsWith("MULTIPLY ") ||
-               upperLine.startsWith("DIVIDE ") ||
-               upperLine.startsWith("COMPUTE ") ||
-               upperLine.startsWith("READ ") ||
-               upperLine.startsWith("WRITE ") ||
-               upperLine.startsWith("OPEN ") ||
-               upperLine.startsWith("CLOSE ");
-    }
-
-
-    /* 
-    public String process(File cobolFile, CobolParserParams params) throws IOException {
-        if (cobolFile == null || !cobolFile.exists()) {
-            String msg = String.format("Input file does not exist: %s",
-                    cobolFile != null ? cobolFile.getAbsolutePath() : "null");
-            System.out.println(msg);
-            throw new IOException(msg);
-        }
-        if (!cobolFile.canRead()) {
-            String msg = String.format("Input file is not readable: %s",
-                    cobolFile.getAbsolutePath());
-            System.out.println(msg);
-            throw new IOException(msg);
-        }
-        if (cobolFile.length() == 0 && params.isStrictMode()) {
-            String msg = String.format("Input file is empty: %s",
-                    cobolFile.getAbsolutePath());
-            System.out.println(msg);
-            throw new IOException(msg);
-        }
-        Charset charset = params != null && params.getCharset() != null ? params.getCharset() : Charset.defaultCharset();
-        System.out.println(String.format("Preprocessing file %s with line format %s and charset %s",
-                cobolFile.getName(), params != null && params.getFormat() != null ? params.getFormat() : format, charset));
-        String cobolFileContent = Files.readString(cobolFile.toPath(), charset);
-        return process(cobolFileContent, params);
-    }
-        */
-
 
     protected List<CobolLine> readLines(String cobolCode, CobolParserParams params) throws IOException {
         List<CobolLine> result = new ArrayList<>();
@@ -534,301 +423,6 @@ public class CobolPreProcessorDriver extends CobolPreprocessorBaseVisitor<String
         }
         return output;
     }
-
-    //YK: Added additional methods to handle EXEC statements
-
-    @Override
-    public StringBuilder visitExecAdoStatement(CobolPreprocessorParser.ExecAdoStatementContext ctx) {
-        StringBuilder lineBuilder = new StringBuilder();
-        
-        for (int i = 0; i < ctx.getChildCount(); i++) {
-            ParseTree child = ctx.getChild(i);
-            String token = child.getText();
-            
-            if (i > 0 && !token.trim().isEmpty() && !token.equals(".") && !token.equals(",")) {
-                lineBuilder.append(" ");
-            }
-            lineBuilder.append(token);
-        }
-        
-        String text = lineBuilder.toString().trim();
-        output.append(text).append(NEWLINE);
-        return output;
-    }
-
-    @Override
-    public StringBuilder visitExecWebStatement(CobolPreprocessorParser.ExecWebStatementContext ctx) {
-        StringBuilder lineBuilder = new StringBuilder();
-        
-        for (int i = 0; i < ctx.getChildCount(); i++) {
-            ParseTree child = ctx.getChild(i);
-            String token = child.getText();
-            
-            if (i > 0 && !token.trim().isEmpty() && !token.equals(".") && !token.equals(",")) {
-                lineBuilder.append(" ");
-            }
-            lineBuilder.append(token);
-        }
-        
-        String text = lineBuilder.toString().trim();
-        output.append(text).append(NEWLINE);
-        return output;
-    }
-
-    @Override
-    public StringBuilder visitExecXmlStatement(CobolPreprocessorParser.ExecXmlStatementContext ctx) {
-        StringBuilder lineBuilder = new StringBuilder();
-        
-        for (int i = 0; i < ctx.getChildCount(); i++) {
-            ParseTree child = ctx.getChild(i);
-            String token = child.getText();
-            
-            if (i > 0 && !token.trim().isEmpty() && !token.equals(".") && !token.equals(",")) {
-                lineBuilder.append(" ");
-            }
-            lineBuilder.append(token);
-        }
-        
-        String text = lineBuilder.toString().trim();
-        output.append(text).append(NEWLINE);
-        return output;
-    }
-
-    @Override
-    public StringBuilder visitExecJsonStatement(CobolPreprocessorParser.ExecJsonStatementContext ctx) {
-        StringBuilder lineBuilder = new StringBuilder();
-        
-        for (int i = 0; i < ctx.getChildCount(); i++) {
-            ParseTree child = ctx.getChild(i);
-            String token = child.getText();
-            
-            if (i > 0 && !token.trim().isEmpty() && !token.equals(".") && !token.equals(",")) {
-                lineBuilder.append(" ");
-            }
-            lineBuilder.append(token);
-        }
-        
-        String text = lineBuilder.toString().trim();
-        output.append(text).append(NEWLINE);
-        return output;
-    }
-
-    @Override
-    public StringBuilder visitExecDliStatement(CobolPreprocessorParser.ExecDliStatementContext ctx) {
-        StringBuilder lineBuilder = new StringBuilder();
-        
-        for (int i = 0; i < ctx.getChildCount(); i++) {
-            ParseTree child = ctx.getChild(i);
-            String token = child.getText();
-            
-            if (i > 0 && !token.trim().isEmpty() && !token.equals(".") && !token.equals(",")) {
-                lineBuilder.append(" ");
-            }
-            lineBuilder.append(token);
-        }
-        
-        String text = lineBuilder.toString().trim();
-        output.append(text).append(NEWLINE);
-        return output;
-    }
-
-    // 2. Add support for compiler directives
-    @Override
-    public StringBuilder visitCompilerDirective(CobolPreprocessorParser.CompilerDirectiveContext ctx) {
-        StringBuilder lineBuilder = new StringBuilder();
-        
-        for (int i = 0; i < ctx.getChildCount(); i++) {
-            ParseTree child = ctx.getChild(i);
-            String token = child.getText();
-            
-            if (i > 0 && !token.trim().isEmpty()) {
-                lineBuilder.append(" ");
-            }
-            lineBuilder.append(token);
-        }
-        
-        String text = lineBuilder.toString().trim();
-        
-        // Handle compiler directives (these are typically passed through or processed)
-        if (text.startsWith(">>SET CONSTANT")) {
-            // Could store constants for later substitution
-            System.out.println("DEBUG: Compiler constant definition: " + text);
-        } else if (text.startsWith(">>SOURCEFORMAT")) {
-            // Could change source format processing
-            System.out.println("DEBUG: Source format directive: " + text);
-        } else if (text.startsWith(">>TURN")) {
-            // Could enable/disable error checking
-            System.out.println("DEBUG: Error checking directive: " + text);
-        }
-        
-        // For now, pass through as comments to preserve information
-        output.append("*> ").append(text).append(NEWLINE);
-        return output;
-    }
-
-    // 3. Add support for BASIS/INSERT/DELETE statements
-    @Override
-    public StringBuilder visitBasisStatement(CobolPreprocessorParser.BasisStatementContext ctx) {
-        // BASIS statements are library management directives
-        String basisSource = ctx.copySource().getText().replaceAll("[\"'.]", "").toUpperCase();
-        System.out.println("DEBUG: BASIS statement for: " + basisSource);
-        
-        // In a full implementation, this would establish a base version
-        // For now, treat like a COPY
-        String copyContent = copyBooks.getOrDefault(basisSource, null);
-        if (copyContent != null) {
-            String[] lines = copyContent.split("\\r?\\n");
-            for (String line : lines) {
-                if (!line.trim().isEmpty()) {
-                    output.append(line.trim()).append(NEWLINE);
-                }
-            }
-        } else {
-            System.out.println("BASIS copybook not found: " + basisSource);
-            output.append("* BASIS ").append(basisSource).append(" content not found.").append(NEWLINE);
-        }
-        
-        return output;
-    }
-
-    @Override
-    public StringBuilder visitInsertStatement(CobolPreprocessorParser.InsertStatementContext ctx) {
-        // INSERT statements add content to a basis
-        String insertSource = ctx.copySource().getText().replaceAll("[\"'.]", "").toUpperCase();
-        System.out.println("DEBUG: INSERT statement for: " + insertSource);
-        
-        // Treat like a COPY for now
-        String copyContent = copyBooks.getOrDefault(insertSource, null);
-        if (copyContent != null) {
-            String[] lines = copyContent.split("\\r?\\n");
-            for (String line : lines) {
-                if (!line.trim().isEmpty()) {
-                    output.append(line.trim()).append(NEWLINE);
-                }
-            }
-        } else {
-            System.out.println("INSERT copybook not found: " + insertSource);
-        }
-        
-        return output;
-    }
-
-    @Override
-    public StringBuilder visitDeleteStatement(CobolPreprocessorParser.DeleteStatementContext ctx) {
-        // DELETE statements remove sequence number ranges
-        String sequenceNumbers = ctx.sequenceNumbers().getText();
-        System.out.println("DEBUG: DELETE statement for sequence numbers: " + sequenceNumbers);
-        
-        // In a full implementation, this would remove lines by sequence number
-        // For now, just log it
-        output.append("* DELETE ").append(sequenceNumbers).append(NEWLINE);
-        
-        return output;
-    }
-
-    // 4. Add support for conditional compilation
-    @Override
-    public StringBuilder visitConditionalCompilation(CobolPreprocessorParser.ConditionalCompilationContext ctx) {
-        // Handle IFDEF/IFNDEF/ENDIF directives
-        String text = ctx.getText();
-        System.out.println("DEBUG: Conditional compilation directive: " + text);
-        
-        // For now, pass through as comments
-        output.append("*> ").append(text).append(NEWLINE);
-        return output;
-    }
-
-    // 5. Enhanced COPY statement handling
-    @Override
-    public StringBuilder visitCopyStatementEnhanced(CobolPreprocessorParser.CopyStatementEnhancedContext ctx) { 
-        String copySource = ctx.copySource().getText().replaceAll("[\"'.]", "").toUpperCase();
-        String copyContent = copyBooks.getOrDefault(copySource, null);
-        
-        if (copyContent == null) {
-            String msg = "Copybook not found: " + copySource;
-            System.out.println(msg);
-            if (strictMode) {
-                throw new RuntimeException(msg);
-            }
-            copyContent = "* COPY " + copySource + " content not found.";
-        }
-        
-        // Handle PREFIX and SUFFIX if present
-        String prefix = "";
-        String suffix = "";
-        
-        // Extract PREFIX/SUFFIX from context (simplified)
-        for (int i = 0; i < ctx.getChildCount(); i++) {
-            ParseTree child = ctx.getChild(i);
-            String token = child.getText();
-            
-            if (token.equals("PREFIX") && i + 1 < ctx.getChildCount()) {
-                prefix = ctx.getChild(i + 1).getText().replaceAll("[\"']", "");
-            } else if (token.equals("SUFFIX") && i + 1 < ctx.getChildCount()) {
-                suffix = ctx.getChild(i + 1).getText().replaceAll("[\"']", "");
-            }
-        }
-        
-        // Apply PREFIX/SUFFIX to identifiers in copy content
-        if (!prefix.isEmpty() || !suffix.isEmpty()) {
-            copyContent = applyPrefixSuffix(copyContent, prefix, suffix);
-        }
-        
-        // FIXED: Apply REPLACING if present - handle List properly
-        if (ctx.replacingPhraseEnhanced() != null && !ctx.replacingPhraseEnhanced().isEmpty()) {
-            // Process each replacing phrase in the list
-            for (CobolPreprocessorParser.ReplacingPhraseEnhancedContext replacingCtx : ctx.replacingPhraseEnhanced()) {
-                copyContent = applyEnhancedReplacing(copyContent, replacingCtx);
-            }
-        }
-        
-        // Output processed content
-        String[] lines = copyContent.split("\\r?\\n");
-        for (String line : lines) {
-            if (!line.trim().isEmpty()) {
-                output.append(line.trim()).append(NEWLINE);
-            }
-        }
-        
-        return output;  
-    }
-
-    // Helper method for PREFIX/SUFFIX processing
-    private String applyPrefixSuffix(String content, String prefix, String suffix) {
-        // Simple implementation - in practice, this would be more sophisticated
-        // and only apply to COBOL identifiers, not keywords or literals
-        
-        String[] lines = content.split("\\r?\\n");
-        StringBuilder result = new StringBuilder();
-        
-        for (String line : lines) {
-            String processedLine = line;
-            
-            // Apply prefix/suffix to identifiers (simplified pattern)
-            if (!prefix.isEmpty()) {
-                processedLine = processedLine.replaceAll("\\b([A-Z][A-Z0-9-]*)\\b", 
-                    prefix + "$1");
-            }
-            if (!suffix.isEmpty()) {
-                processedLine = processedLine.replaceAll("\\b([A-Z][A-Z0-9-]*)\\b", 
-                    "$1" + suffix);
-            }
-            
-            result.append(processedLine).append(NEWLINE);
-        }
-        
-        return result.toString();
-    }
-
-    // Helper method for enhanced REPLACING
-    private String applyEnhancedReplacing(String content, CobolPreprocessorParser.ReplacingPhraseEnhancedContext ctx) {
-        // For now, delegate to existing replacing logic
-        // In a full implementation, this would handle LEADING/TRAILING replacements
-        System.out.println("DEBUG: Enhanced REPLACING not fully implemented, using standard REPLACING");
-        return content;
-    }
-
-    //YK: End of EXEC statements
 
     @Override
     public StringBuilder visitCompilerOptions(CobolPreprocessorParser.CompilerOptionsContext ctx) {
@@ -916,31 +510,30 @@ public class CobolPreProcessorDriver extends CobolPreprocessorBaseVisitor<String
 
     @Override
     public StringBuilder visitExecCicsStatement(CobolPreprocessorParser.ExecCicsStatementContext ctx) {
+        // Reconstruct EXEC CICS statement with proper spacing
         StringBuilder lineBuilder = new StringBuilder();
         
-        System.out.println("DEBUG: EXEC CICS tokens:");
         for (int i = 0; i < ctx.getChildCount(); i++) {
             ParseTree child = ctx.getChild(i);
             String token = child.getText();
-            System.out.println("  Token " + i + ": '" + token + "'");
             
-            if (i > 0 && !token.trim().isEmpty()) {
-                if (!token.equals("(") && !token.equals(")") && !token.equals(".") && !token.equals(",")) {
-                    lineBuilder.append(" ");
-                }
+            // Add space before token (except for first token and punctuation)
+            if (i > 0 && !token.trim().isEmpty() && !token.equals(".") && !token.equals(",")) {
+                lineBuilder.append(" ");
             }
-            
-            // WORKAROUND: Fix the merged LINKPROGRAM token
-            if (token.contains("LINKPROGRAM")) {
-                token = token.replace("LINKPROGRAM", "LINK PROGRAM");
-                System.out.println("DEBUG: Fixed token to: '" + token + "'");
-            }
-            
             lineBuilder.append(token);
         }
         
         String text = lineBuilder.toString().trim();
-        System.out.println("DEBUG: Final EXEC CICS: '" + text + "'");
+        
+        // Handle special EXEC tags transformation
+        if (text.contains(EXEC_CICS_TAG)) {
+            text = text.replace(EXEC_CICS_TAG, "EXEC CICS");
+        }
+        if (text.contains(EXEC_END_TAG)) {
+            text = text.replace(EXEC_END_TAG, "END-EXEC");
+        }
+        
         output.append(text).append(NEWLINE);
         return output;
     }
@@ -983,55 +576,6 @@ public class CobolPreProcessorDriver extends CobolPreprocessorBaseVisitor<String
         return output;
     }
 
-    @Override
-    public StringBuilder visitCharDataLine(CobolPreprocessorParser.CharDataLineContext ctx) {
-        // FIXED: Get individual tokens and reconstruct with proper spacing
-        StringBuilder lineBuilder = new StringBuilder();
-        
-        for (int i = 0; i < ctx.getChildCount(); i++) {
-            ParseTree child = ctx.getChild(i);
-            String token = child.getText();
-            
-            // FIXED: Improved spacing logic
-            if (i > 0 && !token.trim().isEmpty()) {
-                // Add space before token except for punctuation that should be adjacent
-                if (!token.equals(".") && !token.equals(",") && !token.equals("(") && !token.equals(")")) {
-                    lineBuilder.append(" ");
-                }
-            }
-            lineBuilder.append(token);
-        }
-        
-        String text = lineBuilder.toString().trim();
-        
-        // Skip if this line is a comment or empty
-        if (text.isEmpty() || text.startsWith("*")) {
-            return output;
-        }
-        
-        System.out.println("DEBUG: Processing line: '" + text + "'");
-        System.out.println("DEBUG: Active REPLACE contexts: " + replaceContexts.size());
-        
-        // Apply active REPLACE transformations
-        String originalText = text;
-        for (int i = 0; i < replaceContexts.size(); i++) {
-            ReplaceContext context = replaceContexts.get(i);
-            text = context.apply(text);
-            System.out.println("DEBUG: After REPLACE context " + i + ": '" + text + "'");
-        }
-        
-        if (!originalText.equals(text)) {
-            System.out.println("DEBUG: Text changed from '" + originalText + "' to '" + text + "'");
-        }
-        
-        // Only append non-empty lines
-        if (!text.isEmpty()) {
-            output.append(text).append(NEWLINE);
-        }
-        return output;
-    }
-
-/* 
     @Override
     public StringBuilder visitCharDataLine(CobolPreprocessorParser.CharDataLineContext ctx) {
         // Get individual tokens and reconstruct with proper spacing
@@ -1077,7 +621,6 @@ public class CobolPreProcessorDriver extends CobolPreprocessorBaseVisitor<String
         return output;
     }
 
-    */
     private String applyReplacing(String content, CobolPreprocessorParser.ReplacingPhraseContext replacingPhrase) {
         if (replacingPhrase == null) {
             System.out.println("Invalid replacing phrase, skipping replacement.");
@@ -1236,14 +779,14 @@ public class CobolPreProcessorDriver extends CobolPreprocessorBaseVisitor<String
 
 public static void main(String[] args) throws IOException {
         if (args.length < 2) { 
-            System.err.println("Usage: java CobolPreProcessorDriver <input.cbl> <output.cbl>");
+            System.err.println("Usage: java CobolPreprocessorDriver <input.cbl> <output.cbl>");
             System.exit(1);
         }
         
         String inputFile = args[0];
         String outputFile = args[1];
         
-        CobolPreProcessorDriver preprocessor = new CobolPreProcessorDriver();
+        CobolPreprocessorDriver preprocessor = new CobolPreprocessorDriver();
         CobolParserParams params = new CobolParserParamsImpl();
         ((CobolParserParamsImpl) params).setFormat(CobolSourceFormatEnum.FIXED);
         ((CobolParserParamsImpl) params).setCopyBookDirectory(new File("./copybooks"));
