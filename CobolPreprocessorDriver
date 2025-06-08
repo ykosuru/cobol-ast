@@ -363,8 +363,8 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
                     continue;
                 }
                 
-                // Check for comments
-                if (contentArea.startsWith("*")) {
+                // Check for comments (asterisk or slash)
+                if (contentArea.startsWith("*") || contentArea.startsWith("/")) {
                     result.add(new CobolLine(contentArea, sequenceArea, indicatorArea, "", contentArea, "", false));
                 } else {
                     // Regular code line - use only the content area
@@ -373,7 +373,10 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
             } else {
                 // Handle short lines
                 String trimmedLine = line.trim();
-                if (!trimmedLine.isEmpty() && !trimmedLine.startsWith("*")) {
+                if (!trimmedLine.isEmpty() && !trimmedLine.startsWith("*") && !trimmedLine.startsWith("/")) {
+                    result.add(new CobolLine(trimmedLine, "", "", "", trimmedLine, "", false));
+                } else if (trimmedLine.startsWith("*") || trimmedLine.startsWith("/")) {
+                    // Handle short comment lines
                     result.add(new CobolLine(trimmedLine, "", "", "", trimmedLine, "", false));
                 }
             }
@@ -382,7 +385,7 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
         return result;
     }
     
-
+    // Update the rewriteLines method to handle slash comments
     protected List<CobolLine> rewriteLines(List<CobolLine> lines) {
         List<CobolLine> result = new ArrayList<>();
         boolean inCommentEntry = false;
@@ -399,7 +402,7 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
             
             // Handle lines within comment entry
             if (inCommentEntry) {
-                if (content.startsWith("*") || content.trim().isEmpty()) {
+                if (content.startsWith("*") || content.startsWith("/") || content.trim().isEmpty()) {
                     result.add(line); // PRESERVE comment content
                     continue;
                 } else {
@@ -408,7 +411,7 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
                 }
             }
             
-            // Add all lines (including regular comments)
+            // Add all lines (including regular comments and slash comments)
             result.add(line);
         }
         
@@ -439,14 +442,32 @@ public class CobolPreprocessorDriver extends CobolPreprocessorBaseVisitor<String
         return output;
     }
 
-    
     @Override
     public StringBuilder visitCommentLine(CobolPreprocessorParser.CommentLineContext ctx) {
         // Preserve all comment content exactly as-is
         String commentText = ctx.getText().trim();
-        output.append(commentText).append(NEWLINE);
+        
+        // Handle different types of comments
+        if (commentText.startsWith("*>>CE")) {
+            // Comment entry - preserve as-is
+            output.append(commentText).append(NEWLINE);
+        } else if (commentText.startsWith("*>")) {
+            // Tagged comment - preserve as-is
+            output.append(commentText).append(NEWLINE);
+        } else if (commentText.startsWith("*")) {
+            // Asterisk comment - preserve as-is
+            output.append(commentText).append(NEWLINE);
+        } else if (commentText.startsWith("/")) {
+            // Slash comment (like /===.../) - preserve as-is
+            output.append(commentText).append(NEWLINE);
+        } else {
+            // Any other comment format - preserve as-is
+            output.append(commentText).append(NEWLINE);
+        }
+        
         return output;
     }
+
 
     @Override
     public StringBuilder visitCharDataLine(CobolPreprocessorParser.CharDataLineContext ctx) {
