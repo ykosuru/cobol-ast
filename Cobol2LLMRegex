@@ -49,9 +49,12 @@ public class Cobol2LLMRegex {
         }
     }
     
+    /**
+     * Updated translateFile method with call graph integration
+     */
     public void translateFile(String inputPath, String outputPath) throws IOException {
         String cobolSource = new String(Files.readAllBytes(Paths.get(inputPath)));
-        System.out.println("Processing COBOL file: " + inputPath);
+        System.out.println("Processing COBOL file with call graph analysis: " + inputPath);
         
         try {
             // Try ANTLR parsing first (when available)
@@ -63,10 +66,12 @@ public class Cobol2LLMRegex {
             }
             
         } catch (Exception e) {
-            System.out.println("ANTLR parsing failed, using enhanced text analysis: " + e.getMessage());
+            System.out.println("ANTLR parsing failed, using enhanced call graph analysis: " + e.getMessage());
             
-            // Fallback to enhanced text analysis
-            CobolStructure structure = analyzeCobolTextEnhanced(cobolSource, inputPath);
+            // Use enhanced call graph analyzer instead of basic text analysis
+            CallGraphAnalyzer analyzer = new CallGraphAnalyzer();
+            CobolStructure structure = analyzer.analyzeCobolWithCallGraph(cobolSource, inputPath);
+            
             String llmRepresentation = generateEnhancedLLMRepresentation(structure, inputPath);
             
             try (PrintWriter writer = new PrintWriter(new FileWriter(outputPath))) {
@@ -75,9 +80,420 @@ public class Cobol2LLMRegex {
         }
     }
     
+
+    private String generateEnhancedLLMRepresentation(CobolStructure structure, String originalFile) {
+        StringBuilder sb = new StringBuilder();
+        
+        sb.append("# COBOL to Java Translation Request\n\n");
+        sb.append("**Source File:** ").append   (originalFile).append("\n");
+        sb.append("**Translation Target:** Java\n");
+        sb.append("**Generated:** ").append(new Date()).append("\n");
+        sb.append("**Parser Status:** Enhanced Call Graph Analysis\n\n");
+        
+        sb.append("## Program Structure Analysis\n\n");
+        
+        // Program identification
+        if (structure.getProgramId() != null && !structure.getProgramId().trim().isEmpty()) {
+            sb.append("**Program ID:** ").append(structure.getProgramId()).append("\n");
+        }
+        if (structure.getAuthor() != null && !structure.getAuthor().trim().isEmpty()) {
+            sb.append("**Author:** ").append(structure.getAuthor()).append("\n");
+        }
+        
+        // Enhanced Dependencies Section with Call Graph Analysis
+        sb.append("\n## Call Graph & Dependencies Analysis\n\n");
+        
+        // Copybooks
+        if (!structure.getCopybooks().isEmpty()) {
+            sb.append("### Copybooks\n");
+            for (CobolCopybook copybook : structure.getCopybooks()) {
+                sb.append("- **").append(copybook.getName()).append("**");
+                sb.append(" (").append(copybook.getType()).append(")");
+                if (copybook.getLibrary() != null) {
+                    sb.append(" - Library: ").append(copybook.getLibrary());
+                }
+                sb.append(" - Found at: ").append(copybook.getSourceLocation());
+                sb.append("\n");
+            }
+            sb.append("\n");
+        } else {
+            sb.append("### Copybooks\n");
+            sb.append("*No copybooks detected in current program.*\n\n");
+        }
+        
+        // External Program Calls
+        if (!structure.getExternalCalls().isEmpty()) {
+            sb.append("### External Program Calls\n");
+            for (CobolExternalCall call : structure.getExternalCalls()) {
+                sb.append("- **").append(call.getProgramName()).append("**");
+                sb.append(" (").append(call.getCallType()).append(")");
+                if (call.isDynamic()) {
+                    sb.append(" - Dynamic Call");
+                }
+                if (!call.getParameters().isEmpty()) {
+                    sb.append(" - Parameters: ").append(String.join(", ", call.getParameters()));
+                }
+                sb.append(" - Found at: ").append(call.getSourceLocation());
+                sb.append("\n");
+            }
+            sb.append("\n");
+        } else {
+            sb.append("### External Program Calls\n");
+            sb.append("*No external program calls detected.*\n\n");
+        }
+        
+        // Enhanced PERFORM Analysis with Call Graph Context
+        if (!structure.getPerformCalls().isEmpty()) {
+            sb.append("### PERFORM Call Analysis\n");
+            
+            List<CobolPerformCall> internalPerforms = structure.getPerformCalls().stream()
+                .filter(p -> !p.isExternal()).collect(java.util.stream.Collectors.toList());
+            List<CobolPerformCall> externalPerforms = structure.getPerformCalls().stream()
+                .filter(p -> p.isExternal()).collect(java.util.stream.Collectors.toList());
+            List<CobolPerformCall> resolvedPerforms = structure.getPerformCalls().stream()
+                .filter(p -> p.getSourceLocation() != null && p.getSourceLocation().contains("copybook"))
+                .collect(java.util.stream.Collectors.toList());
+            
+            // Statistics
+            sb.append("**Call Graph Statistics:**\n");
+            sb.append("- Total PERFORM calls: ").append(structure.getPerformCalls().size()).append("\n");
+            sb.append("- Internal calls: ").append(internalPerforms.size()).append("\n");
+            sb.append("- External/unresolved calls: ").append(externalPerforms.size()).append("\n");
+            sb.append("- Likely copybook calls: ").append(resolvedPerforms.size()).append("\n\n");
+            
+            if (!internalPerforms.isEmpty()) {
+                sb.append("#### Internal PERFORM Calls ✅\n");
+                for (CobolPerformCall perform : internalPerforms) {
+                    sb.append("- **").append(perform.getTargetName()).append("**");
+                    sb.append(" (").append(perform.getPerformType()).append(")");
+                    if (perform.getThroughTarget() != null) {
+                        sb.append(" THRU ").append(perform.getThroughTarget());
+                    }
+                    sb.append("\n");
+                }
+                sb.append("\n");
+            }
+            
+            if (!externalPerforms.isEmpty()) {
+                sb.append("#### External/Unresolved PERFORM Calls ⚠️\n");
+                sb.append("*These may be in copybooks or indicate parsing issues:*\n");
+                for (CobolPerformCall perform : externalPerforms) {
+                    sb.append("- **").append(perform.getTargetName()).append("**");
+                    sb.append(" (").append(perform.getPerformType()).append(")");
+                    if (perform.getSourceLocation() != null) {
+                        sb.append(" - ").append(perform.getSourceLocation());
+                    }
+                    sb.append("\n");
+                }
+                sb.append("\n");
+            }
+        }
+        
+        // Continue with existing sections (Data Structures, Program Logic, etc.)
+        sb.append("## Data Structures\n\n");
+        
+        if (!structure.getWorkingStorageVariables().isEmpty()) {
+            sb.append("### Working Storage Variables\n");
+            for (CobolVariable var : structure.getWorkingStorageVariables()) {
+                sb.append("- **").append(var.getName()).append("**");
+                sb.append(" (Level ").append(var.getLevel()).append(")");
+                sb.append(" - Type: ").append(var.getDataType());
+                if (var.getPictureClause() != null) {
+                    sb.append(", Picture: ").append(var.getPictureClause());
+                }
+                if (var.getInitialValue() != null) {
+                    sb.append(", Initial: ").append(var.getInitialValue());
+                }
+                sb.append("\n");
+            }
+            sb.append("\n");
+        }
+        
+        // File Descriptions
+        if (!structure.getFileDescriptions().isEmpty()) {
+            sb.append("### File Descriptions\n");
+            for (CobolFile file : structure.getFileDescriptions()) {
+                sb.append("- **").append(file.getName()).append("**");
+                if (file.getAccessMode() != null) {
+                    sb.append(" - Access: ").append(file.getAccessMode());
+                }
+                if (file.getOrganization() != null) {
+                    sb.append(", Organization: ").append(file.getOrganization());
+                }
+                if (file.getRecordFormat() != null) {
+                    sb.append(", ").append(file.getRecordFormat());
+                }
+                sb.append("\n");
+            }
+            sb.append("\n");
+        }
+        
+        // Program Logic with Call Graph Context
+        sb.append("## Program Logic & Control Flow\n\n");
+        if (!structure.getProcedures().isEmpty()) {
+            sb.append("### Procedure Flow (Call Graph Order)\n");
+            
+            // Group procedures by likely execution order
+            Map<String, List<CobolProcedure>> procedureGroups = groupProceduresByCallPattern(structure);
+            
+            for (Map.Entry<String, List<CobolProcedure>> group : procedureGroups.entrySet()) {
+                if (group.getValue().size() > 1) {
+                    sb.append("#### ").append(group.getKey()).append("\n");
+                }
+                
+                for (CobolProcedure proc : group.getValue()) {
+                    if (group.getValue().size() == 1) {
+                        sb.append("#### ").append(proc.getName()).append("\n");
+                    } else {
+                        sb.append("##### ").append(proc.getName()).append("\n");
+                    }
+                    
+                    sb.append("**Logic Summary:** ").append(proc.getLogicSummary()).append("\n");
+                    
+                    // Analyze call relationships
+                    List<String> calledBy = findCallersOf(proc.getName(), structure);
+                    List<String> calls = findCalleesOf(proc.getName(), structure);
+                    
+                    if (!calledBy.isEmpty()) {
+                        sb.append("**Called by:** ").append(String.join(", ", calledBy)).append("\n");
+                    }
+                    if (!calls.isEmpty()) {
+                        sb.append("**Calls:** ").append(String.join(", ", calls)).append("\n");
+                    }
+                    
+                    sb.append("\n");
+                    
+                    // Show first 10 lines of code
+                    String[] codeLines = proc.getSourceCode().split("\n");
+                    sb.append("```cobol\n");
+                    int linesToShow = Math.min(10, codeLines.length);
+                    for (int i = 0; i < linesToShow; i++) {
+                        sb.append(codeLines[i]).append("\n");
+                    }
+                    if (codeLines.length > 10) {
+                        sb.append("... [").append(codeLines.length - 10).append(" more lines]\n");
+                    }
+                    sb.append("```\n\n");
+                }
+            }
+        } else {
+            sb.append("*No procedures detected or parser not fully configured.*\n");
+        }
+        
+        // Enhanced Translation Guidance with Call Graph Insights
+        sb.append("## Translation Guidance\n\n");
+        
+        sb.append("### Call Graph Analysis Insights\n");
+        if (!structure.getPerformCalls().isEmpty()) {
+            long externalCallCount = structure.getPerformCalls().stream()
+                .filter(CobolPerformCall::isExternal).count();
+            
+            if (externalCallCount == 0) {
+                sb.append("- **✅ Self-Contained Program:** All PERFORM calls resolved internally\n");
+                sb.append("- **Translation Complexity:** Low - straightforward method conversion\n");
+            } else {
+                sb.append("- **⚠️ External Dependencies:** ").append(externalCallCount)
+                .append(" unresolved PERFORM calls\n");
+                sb.append("- **Translation Strategy:** Review missing procedures - may be in copybooks\n");
+                sb.append("- **Recommended Action:** Identify copybook dependencies or create stub methods\n");
+            }
+        }
+        
+        sb.append("- **Control Flow:** Preserve PERFORM call hierarchy in Java method calls\n");
+        sb.append("- **Error Handling:** Add proper exception handling for external calls\n\n");
+        
+        sb.append("### Recommended Java Architecture\n");
+        String className = structure.getProgramId() != null ? 
+                toPascalCase(structure.getProgramId()) : "CobolProgram";
+        sb.append("- **Main Class:** ").append(className).append("\n");
+        sb.append("- **Package Structure:** com.company.cobol.").append(className.toLowerCase()).append("\n");
+        
+        // Architecture recommendations based on call graph
+        if (!structure.getPerformCalls().isEmpty()) {
+            sb.append("- **Method Structure:** Each paragraph becomes a private method\n");
+            sb.append("- **Call Graph Preservation:** Maintain original PERFORM call relationships\n");
+        }
+        
+        if (!structure.getCopybooks().isEmpty()) {
+            sb.append("- **Copybook Classes:** com.company.cobol.copybooks.*\n");
+            sb.append("- **Dependency Injection:** Use Spring/CDI for copybook method resolution\n");
+        }
+        
+        if (!structure.getExternalCalls().isEmpty()) {
+            sb.append("- **Service Interfaces:** com.company.cobol.services.*\n");
+            sb.append("- **External Program Calls:** Implement as microservice calls or local services\n");
+        }
+        
+        sb.append("- **Data Handling:** Use appropriate Java data types and collections\n");
+        sb.append("- **File I/O:** Consider using Java NIO or streaming APIs\n");
+        sb.append("- **Error Handling:** Implement proper exception handling\n\n");
+        
+        sb.append("### COBOL-Specific Translation Patterns\n");
+        sb.append("- **PICTURE clauses:** Map to appropriate Java types (String, BigDecimal, etc.)\n");
+        sb.append("- **MOVE statements:** Translate to assignment or data transformation\n");
+        sb.append("- **PERFORM loops:** Convert to Java for/while loops or method calls\n");
+        sb.append("- **PERFORM THRU:** Create method sequences or composite methods\n");
+        sb.append("- **Conditional logic:** Preserve business logic in if/else or switch statements\n");
+        sb.append("- **File handling:** Replace COBOL file operations with Java I/O streams\n");
+        sb.append("- **Data validation:** Add appropriate input validation and error checking\n");
+        
+        if (!structure.getPerformCalls().stream().filter(CobolPerformCall::isExternal).collect(java.util.stream.Collectors.toList()).isEmpty()) {
+            sb.append("- **Missing PERFORM targets:** Create abstract methods or interfaces for unresolved calls\n");
+            sb.append("- **Copybook integration:** Implement dependency resolution for external procedures\n");
+        }
+        
+        sb.append("\n### Call Graph Translation Strategy\n");
+        sb.append("```java\n");
+        sb.append("public class ").append(className).append(" {\n");
+        sb.append("    \n");
+        sb.append("    // Main entry point\n");
+        sb.append("    public void execute() {\n");
+        sb.append("        // Translate main procedure flow\n");
+        sb.append("        mainProcess();\n");
+        sb.append("    }\n");
+        sb.append("    \n");
+        
+        // Generate method signatures based on procedures
+        if (!structure.getProcedures().isEmpty()) {
+            sb.append("    // Translated COBOL procedures\n");
+            for (CobolProcedure proc : structure.getProcedures().subList(0, Math.min(3, structure.getProcedures().size()))) {
+                String methodName = toCamelCase(proc.getName());
+                sb.append("    private void ").append(methodName).append("() {\n");
+                sb.append("        // TODO: Implement ").append(proc.getName()).append(" logic\n");
+                sb.append("        // Original logic: ").append(proc.getLogicSummary()).append("\n");
+                sb.append("    }\n");
+                sb.append("    \n");
+            }
+            
+            if (structure.getProcedures().size() > 3) {
+                sb.append("    // ... ").append(structure.getProcedures().size() - 3).append(" more methods\n");
+            }
+        }
+        
+        sb.append("}\n");
+        sb.append("```\n\n");
+        
+        return sb.toString();
+    }
+
     /**
-     * Enhanced COBOL text analysis with comprehensive dependency tracking
+     * Group procedures by likely call patterns for better organization
      */
+    private Map<String, List<CobolProcedure>> groupProceduresByCallPattern(CobolStructure structure) {
+        Map<String, List<CobolProcedure>> groups = new LinkedHashMap<>();
+        
+        // Find entry points (procedures not called by others)
+        Set<String> calledProcedures = structure.getPerformCalls().stream()
+            .map(CobolPerformCall::getTargetName)
+            .filter(name -> !structure.getPerformCalls().stream()
+                .anyMatch(p -> p.isExternal() && p.getTargetName().equals(name)))
+            .collect(java.util.stream.Collectors.toSet());
+        
+        List<CobolProcedure> entryPoints = new ArrayList<>();
+        List<CobolProcedure> utilities = new ArrayList<>();
+        List<CobolProcedure> others = new ArrayList<>();
+        
+        for (CobolProcedure proc : structure.getProcedures()) {
+            if (!calledProcedures.contains(proc.getName()) || 
+                proc.getName().contains("MAIN") || proc.getName().contains("INIT")) {
+                entryPoints.add(proc);
+            } else if (proc.getName().contains("UTIL") || proc.getName().contains("COMMON") ||
+                    proc.getName().contains("ROUTINE")) {
+                utilities.add(proc);
+            } else {
+                others.add(proc);
+            }
+        }
+        
+        if (!entryPoints.isEmpty()) {
+            groups.put("Entry Points", entryPoints);
+        }
+        if (!others.isEmpty()) {
+            groups.put("Business Logic", others);
+        }
+        if (!utilities.isEmpty()) {
+            groups.put("Utility Procedures", utilities);
+        }
+        
+        return groups;
+    }
+
+    /**
+     * Find procedures that call the given procedure
+     */
+    private List<String> findCallersOf(String procedureName, CobolStructure structure) {
+        return structure.getPerformCalls().stream()
+            .filter(call -> call.getTargetName().equals(procedureName))
+            .map(call -> extractCallerFromLocation(call.getSourceLocation()))
+            .filter(Objects::nonNull)
+            .distinct()
+            .collect(java.util.stream.Collectors.toList());
+    }
+
+    /**
+     * Find procedures called by the given procedure
+     */
+    private List<String> findCalleesOf(String procedureName, CobolStructure structure) {
+        // This would require analyzing the procedure source code
+        // For now, return empty list - could be enhanced with source analysis
+        return new ArrayList<>();
+    }
+
+    /**
+     * Extract caller name from source location string
+     */
+    private String extractCallerFromLocation(String location) {
+        if (location != null && location.contains("called from ")) {
+            String[] parts = location.split("called from ");
+            if (parts.length > 1) {
+                return parts[1].replaceAll("[^A-Z0-9\\-]", "");
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Convert COBOL paragraph name to Java camelCase method name
+     */
+    private String toCamelCase(String cobolName) {
+        if (cobolName == null || cobolName.isEmpty()) {
+            return "unknownMethod";
+        }
+        
+        String[] parts = cobolName.toLowerCase().split("-");
+        StringBuilder result = new StringBuilder(parts[0]);
+        
+        for (int i = 1; i < parts.length; i++) {
+            if (!parts[i].isEmpty()) {
+                result.append(Character.toUpperCase(parts[i].charAt(0)));
+                if (parts[i].length() > 1) {
+                    result.append(parts[i].substring(1));
+                }
+            }
+        }
+        
+        return result.toString();
+    }
+
+    private String toPascalCase(String input) {
+        if (input == null || input.isEmpty()) return "CobolProgram";
+        
+        String cleaned = input.replace("-", " ").replace("_", " ");
+        String[] words = cleaned.split("\\s+");
+        StringBuilder result = new StringBuilder();
+        
+        for (String word : words) {
+            if (!word.isEmpty()) {
+                result.append(word.substring(0, 1).toUpperCase());
+                if (word.length() > 1) {
+                    result.append(word.substring(1).toLowerCase());
+                }
+            }
+        }
+        
+        return result.toString();
+    }
+    
     private CobolStructure analyzeCobolTextEnhanced(String source, String fileName) {
         CobolStructure structure = new CobolStructure();
         String[] lines = source.split("\n");
@@ -570,436 +986,4 @@ public class Cobol2LLMRegex {
         
         return operations.isEmpty() ? "General Processing" : String.join(", ", operations);
     }
-    
-    /**
-     * Generate enhanced LLM representation with full dependency analysis
-     */
-    private String generateEnhancedLLMRepresentation(CobolStructure structure, String originalFile) {
-        StringBuilder sb = new StringBuilder();
-        
-        sb.append("# COBOL to Java Translation Request\n\n");
-        sb.append("**Source File:** ").append(originalFile).append("\n");
-        sb.append("**Translation Target:** Java\n");
-        sb.append("**Generated:** ").append(new Date()).append("\n");
-        sb.append("**Parser Status:** Enhanced Analysis with Dependencies\n\n");
-        
-        sb.append("## Program Structure Analysis\n\n");
-        
-        // Program identification
-        if (structure.getProgramId() != null && !structure.getProgramId().trim().isEmpty()) {
-            sb.append("**Program ID:** ").append(structure.getProgramId()).append("\n");
-        }
-        if (structure.getAuthor() != null && !structure.getAuthor().trim().isEmpty()) {
-            sb.append("**Author:** ").append(structure.getAuthor()).append("\n");
-        }
-        
-        // External Dependencies Section
-        sb.append("\n## External Dependencies\n\n");
-        
-        // Copybooks
-        if (!structure.getCopybooks().isEmpty()) {
-            sb.append("### Copybooks\n");
-            for (CobolCopybook copybook : structure.getCopybooks()) {
-                sb.append("- **").append(copybook.getName()).append("**");
-                sb.append(" (").append(copybook.getType()).append(")");
-                if (copybook.getLibrary() != null) {
-                    sb.append(" - Library: ").append(copybook.getLibrary());
-                }
-                if (copybook.getReplacingClause() != null) {
-                    sb.append(" - ").append(copybook.getReplacingClause());
-                }
-                sb.append(" - Found at: ").append(copybook.getSourceLocation());
-                sb.append("\n");
-            }
-            sb.append("\n");
-        } else {
-            sb.append("### Copybooks\n");
-            sb.append("*No copybooks detected in current program.*\n\n");
-        }
-        
-        // External Program Calls
-        if (!structure.getExternalCalls().isEmpty()) {
-            sb.append("### External Program Calls\n");
-            for (CobolExternalCall call : structure.getExternalCalls()) {
-                sb.append("- **").append(call.getProgramName()).append("**");
-                sb.append(" (").append(call.getCallType()).append(")");
-                if (call.isDynamic()) {
-                    sb.append(" - Dynamic Call");
-                }
-                if (!call.getParameters().isEmpty()) {
-                    sb.append(" - Parameters: ").append(String.join(", ", call.getParameters()));
-                }
-                sb.append(" - Found at: ").append(call.getSourceLocation());
-                sb.append("\n");
-            }
-            sb.append("\n");
-        } else {
-            sb.append("### External Program Calls\n");
-            sb.append("*No external program calls detected.*\n\n");
-        }
-        
-        // PERFORM Calls
-        if (!structure.getPerformCalls().isEmpty()) {
-            sb.append("### PERFORM Calls\n");
-            
-            List<CobolPerformCall> internalPerforms = structure.getPerformCalls().stream()
-                .filter(p -> !p.isExternal()).collect(Collectors.toList());
-            List<CobolPerformCall> externalPerforms = structure.getPerformCalls().stream()
-                .filter(p -> p.isExternal()).collect(Collectors.toList());
-            
-            if (!internalPerforms.isEmpty()) {
-                sb.append("#### Internal PERFORM Calls\n");
-                for (CobolPerformCall perform : internalPerforms) {
-                    sb.append("- **").append(perform.getTargetName()).append("**");
-                    sb.append(" (").append(perform.getPerformType()).append(")");
-                    if (perform.getThroughTarget() != null) {
-                        sb.append(" THRU ").append(perform.getThroughTarget());
-                    }
-                    sb.append("\n");
-                }
-                sb.append("\n");
-            }
-            
-            if (!externalPerforms.isEmpty()) {
-                sb.append("#### External PERFORM Calls (Potential Issues)\n");
-                for (CobolPerformCall perform : externalPerforms) {
-                    sb.append("- **").append(perform.getTargetName()).append("**");
-                    sb.append(" (").append(perform.getPerformType()).append(")");
-                    sb.append(" - ⚠️ Target not found in current program");
-                    sb.append(" - Found at: ").append(perform.getSourceLocation());
-                    sb.append("\n");
-                }
-                sb.append("\n");
-            }
-        }
-        
-        // Data Structures
-        sb.append("## Data Structures\n\n");
-        
-        if (!structure.getWorkingStorageVariables().isEmpty()) {
-            sb.append("### Working Storage Variables\n");
-            for (CobolVariable var : structure.getWorkingStorageVariables()) {
-                sb.append("- **").append(var.getName()).append("**");
-                sb.append(" (Level ").append(var.getLevel()).append(")");
-                sb.append(" - Type: ").append(var.getDataType());
-                if (var.getPictureClause() != null) {
-                    sb.append(", Picture: ").append(var.getPictureClause());
-                }
-                if (var.getInitialValue() != null) {
-                    sb.append(", Initial: ").append(var.getInitialValue());
-                }
-                sb.append("\n");
-            }
-            sb.append("\n");
-        } else {
-            sb.append("### Working Storage Variables\n");
-            sb.append("*No working storage variables detected.*\n\n");
-        }
-        
-        // File Descriptions
-        if (!structure.getFileDescriptions().isEmpty()) {
-            sb.append("### File Descriptions\n");
-            for (CobolFile file : structure.getFileDescriptions()) {
-                sb.append("- **").append(file.getName()).append("**");
-                if (file.getAccessMode() != null) {
-                    sb.append(" - Access: ").append(file.getAccessMode());
-                }
-                if (file.getOrganization() != null) {
-                    sb.append(", Organization: ").append(file.getOrganization());
-                }
-                if (file.getRecordFormat() != null) {
-                    sb.append(", ").append(file.getRecordFormat());
-                }
-                sb.append("\n");
-            }
-            sb.append("\n");
-        } else {
-            sb.append("### File Descriptions\n");
-            sb.append("*No file descriptions detected.*\n\n");
-        }
-        
-        // Program Logic
-        sb.append("## Program Logic\n\n");
-        if (!structure.getProcedures().isEmpty()) {
-            sb.append("### Procedure Flow\n");
-            for (CobolProcedure proc : structure.getProcedures()) {
-                sb.append("#### ").append(proc.getName()).append("\n");
-                sb.append("**Logic Summary:** ").append(proc.getLogicSummary()).append("\n\n");
-                
-                // Show first 10 lines of code
-                String[] codeLines = proc.getSourceCode().split("\n");
-                sb.append("```cobol\n");
-                int linesToShow = Math.min(10, codeLines.length);
-                for (int i = 0; i < linesToShow; i++) {
-                    sb.append(codeLines[i]).append("\n");
-                }
-                if (codeLines.length > 10) {
-                    sb.append("... [").append(codeLines.length - 10).append(" more lines]\n");
-                }
-                sb.append("```\n\n");
-            }
-        } else {
-            sb.append("*No procedures detected or parser not fully configured.*\n");
-        }
-        
-        // Enhanced Translation Guidance
-        sb.append("## Translation Guidance\n\n");
-        
-        sb.append("### External Dependencies Strategy\n");
-        if (!structure.getCopybooks().isEmpty() || !structure.getExternalCalls().isEmpty()) {
-            sb.append("- **Copybook Resolution:** Create separate Java classes or interfaces for each copybook\n");
-            sb.append("- **External Program Calls:** Implement as service interfaces or microservice calls\n");
-            sb.append("- **Dynamic Calls:** Use factory pattern or dependency injection\n");
-            sb.append("- **CICS Calls:** Replace with equivalent middleware (Spring Boot, REST APIs)\n");
-            
-            if (!structure.getPerformCalls().stream().filter(CobolPerformCall::isExternal).collect(Collectors.toList()).isEmpty()) {
-                sb.append("- **External PERFORM Calls:** Review missing paragraphs - may be in copybooks\n");
-            }
-            sb.append("\n");
-        } else {
-            sb.append("- **Self-Contained Program:** No external dependencies detected\n");
-            sb.append("- **Translation Complexity:** Low - straightforward single-class conversion\n\n");
-        }
-        
-        sb.append("### Recommended Java Patterns\n");
-        String className = structure.getProgramId() != null ? 
-                toPascalCase(structure.getProgramId()) : "CobolProgram";
-        sb.append("- **Main Class:** ").append(className).append("\n");
-        sb.append("- **Package Structure:** com.company.cobol.").append(className.toLowerCase()).append("\n");
-        
-        // Add dependency-specific recommendations
-        if (!structure.getCopybooks().isEmpty()) {
-            sb.append("- **Copybook Classes:** com.company.cobol.copybooks.*\n");
-        }
-        if (!structure.getExternalCalls().isEmpty()) {
-            sb.append("- **Service Interfaces:** com.company.cobol.services.*\n");
-        }
-        
-        sb.append("- **Data Handling:** Use appropriate Java data types and collections\n");
-        sb.append("- **File I/O:** Consider using Java NIO or streaming APIs\n");
-        sb.append("- **Error Handling:** Implement proper exception handling\n\n");
-        
-        sb.append("### COBOL-Specific Considerations\n");
-        sb.append("- **PICTURE clauses:** Map to appropriate Java types (String, BigDecimal, etc.)\n");
-        sb.append("- **MOVE statements:** Translate to assignment or data transformation\n");
-        sb.append("- **PERFORM loops:** Convert to Java for/while loops or method calls\n");
-        sb.append("- **Conditional logic:** Preserve business logic in if/else or switch statements\n");
-        sb.append("- **File handling:** Replace COBOL file operations with Java I/O streams\n");
-        sb.append("- **Data validation:** Add appropriate input validation and error checking\n");
-        
-        if (!structure.getExternalCalls().isEmpty()) {
-            sb.append("- **External calls:** Implement proper service layer architecture\n");
-            sb.append("- **Error propagation:** Handle external program failures gracefully\n");
-        }
-        
-        sb.append("\n### Data Type Mapping Guidelines\n");
-        sb.append("- **PIC X(n):** String\n");
-        sb.append("- **PIC 9(n):** Integer or Long\n");
-        sb.append("- **PIC 9(n)V9(m):** BigDecimal\n");
-        sb.append("- **PIC S9(n):** Integer with sign\n");
-        sb.append("- **Level 01 groups:** Custom Java classes\n");
-        sb.append("- **Level 77 items:** Class fields or local variables\n\n");
-        
-        return sb.toString();
-    }
-    
-    private String toPascalCase(String input) {
-        if (input == null || input.isEmpty()) return "CobolProgram";
-        
-        String cleaned = input.replace("-", " ").replace("_", " ");
-        String[] words = cleaned.split("\\s+");
-        StringBuilder result = new StringBuilder();
-        
-        for (String word : words) {
-            if (!word.isEmpty()) {
-                result.append(word.substring(0, 1).toUpperCase());
-                if (word.length() > 1) {
-                    result.append(word.substring(1).toLowerCase());
-                }
-            }
-        }
-        
-        return result.toString();
-    }
 }
-
-// ===== DATA STRUCTURE CLASSES =====
-
-class CobolStructure {
-    private String programId;
-    private String author;
-    private List<CobolVariable> workingStorageVariables = new ArrayList<>();
-    private List<CobolFile> fileDescriptions = new ArrayList<>();
-    private List<CobolProcedure> procedures = new ArrayList<>();
-    private List<CobolCopybook> copybooks = new ArrayList<>();
-    private List<CobolExternalCall> externalCalls = new ArrayList<>();
-    private List<CobolPerformCall> performCalls = new ArrayList<>();
-    
-    // Getters and setters
-    public String getProgramId() { return programId; }
-    public void setProgramId(String programId) { this.programId = programId; }
-    
-    public String getAuthor() { return author; }
-    public void setAuthor(String author) { this.author = author; }
-    
-    public List<CobolVariable> getWorkingStorageVariables() { return workingStorageVariables; }
-    public List<CobolFile> getFileDescriptions() { return fileDescriptions; }
-    public List<CobolProcedure> getProcedures() { return procedures; }
-    public List<CobolCopybook> getCopybooks() { return copybooks; }
-    public List<CobolExternalCall> getExternalCalls() { return externalCalls; }
-    public List<CobolPerformCall> getPerformCalls() { return performCalls; }
-}
-
-class CobolVariable {
-    private String name;
-    private int level;
-    private String dataType;
-    private String pictureClause;
-    private String initialValue;
-    
-    public CobolVariable(String name, int level, String dataType) {
-        this.name = name;
-        this.level = level;
-        this.dataType = dataType;
-    }
-    
-    // Getters and setters
-    public String getName() { return name; }
-    public int getLevel() { return level; }
-    public String getDataType() { return dataType; }
-    public String getPictureClause() { return pictureClause; }
-    public void setPictureClause(String pictureClause) { this.pictureClause = pictureClause; }
-    public String getInitialValue() { return initialValue; }
-    public void setInitialValue(String initialValue) { this.initialValue = initialValue; }
-}
-
-class CobolFile {
-    private String name;
-    private String accessMode;
-    private String organization;
-    private String recordFormat;
-    
-    public CobolFile(String name) {
-        this.name = name;
-    }
-    
-    // Getters and setters
-    public String getName() { return name; }
-    public String getAccessMode() { return accessMode; }
-    public void setAccessMode(String accessMode) { this.accessMode = accessMode; }
-    public String getOrganization() { return organization; }
-    public void setOrganization(String organization) { this.organization = organization; }
-    public String getRecordFormat() { return recordFormat; }
-    public void setRecordFormat(String recordFormat) { this.recordFormat = recordFormat; }
-}
-
-class CobolProcedure {
-    private String name;
-    private String sourceCode;
-    private String logicSummary;
-    private List<String> calledProcedures = new ArrayList<>();
-    
-    public CobolProcedure(String name, String sourceCode) {
-        this.name = name;
-        this.sourceCode = sourceCode;
-    }
-    
-    // Getters and setters
-    public String getName() { return name; }
-    public String getSourceCode() { return sourceCode; }
-    public String getLogicSummary() { return logicSummary; }
-    public void setLogicSummary(String logicSummary) { this.logicSummary = logicSummary; }
-    public List<String> getCalledProcedures() { return calledProcedures; }
-}
-
-class CobolCopybook {
-    private String name;
-    private String library;
-    private String replacingClause;
-    private String sourceLocation;
-    private CopybookType type;
-    
-    public CobolCopybook(String name) {
-        this.name = name;
-    }
-    
-    public enum CopybookType {
-        DATA_STRUCTURE,
-        PROCEDURE_CODE,
-        CONSTANTS,
-        UNKNOWN
-    }
-    
-    // Getters and setters
-    public String getName() { return name; }
-    public String getLibrary() { return library; }
-    public void setLibrary(String library) { this.library = library; }
-    public String getReplacingClause() { return replacingClause; }
-    public void setReplacingClause(String replacingClause) { this.replacingClause = replacingClause; }
-    public String getSourceLocation() { return sourceLocation; }
-    public void setSourceLocation(String sourceLocation) { this.sourceLocation = sourceLocation; }
-    public CopybookType getType() { return type; }
-    public void setType(CopybookType type) { this.type = type; }
-}
-
-class CobolExternalCall {
-    private String programName;
-    private boolean isDynamic;
-    private List<String> parameters = new ArrayList<>();
-    private String sourceLocation;
-    private CallType callType;
-    
-    public CobolExternalCall(String programName) {
-        this.programName = programName;
-    }
-    
-    public enum CallType {
-        STATIC_CALL,
-        DYNAMIC_CALL,
-        CICS_CALL,
-        SQL_CALL,
-        SYSTEM_CALL
-    }
-    
-    // Getters and setters
-    public String getProgramName() { return programName; }
-    public boolean isDynamic() { return isDynamic; }
-    public void setDynamic(boolean dynamic) { isDynamic = dynamic; }
-    public List<String> getParameters() { return parameters; }
-    public String getSourceLocation() { return sourceLocation; }
-    public void setSourceLocation(String sourceLocation) { this.sourceLocation = sourceLocation; }
-    public CallType getCallType() { return callType; }
-    public void setCallType(CallType callType) { this.callType = callType; }
-}
-
-class CobolPerformCall {
-    private String targetName;
-    private String throughTarget;
-    private PerformType performType;
-    private String sourceLocation;
-    private boolean isExternal;
-    
-    public CobolPerformCall(String targetName) {
-        this.targetName = targetName;
-    }
-    
-    public enum PerformType {
-        SIMPLE,
-        THROUGH,
-        TIMES,
-        UNTIL,
-        VARYING
-    }
-    
-    // Getters and setters
-    public String getTargetName() { return targetName; }
-    public String getThroughTarget() { return throughTarget; }
-    public void setThroughTarget(String throughTarget) { this.throughTarget = throughTarget; }
-    public PerformType getPerformType() { return performType; }
-    public void setPerformType(PerformType performType) { this.performType = performType; }
-    public String getSourceLocation() { return sourceLocation; }
-    public void setSourceLocation(String sourceLocation) { this.sourceLocation = sourceLocation; }
-    public boolean isExternal() { return isExternal; }
-    public void setExternal(boolean external) { isExternal = external; }
-}
-
