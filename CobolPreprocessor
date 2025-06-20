@@ -1,0 +1,248 @@
+import java.io.*;
+import java.util.*;
+
+/**
+ * Fixed version of FlexibleCobolPreprocessor that preserves PROCEDURE DIVISION
+ */
+public class CobolPreprocessor {
+    
+    public static void main(String[] args) {
+        if (args.length == 0) {
+            System.out.println("Usage: java FlexibleCobolPreprocessor <input-file> [output-file]");
+            return;
+        }
+        
+        try {
+            CobolPreprocessor preprocessor = new CobolPreprocessor();
+            String outputFile = args.length == 2 ? args[1] + "/" + args[0] + ".clean" : args[0] + ".clean";
+            preprocessor.processFile(args[0], outputFile);
+        } catch (Exception e) {
+            System.err.println("Error: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+    
+    public void processFile(String inputFile, String outputFile) throws IOException {
+        System.out.println("🔄 Processing " + inputFile + " -> " + outputFile);
+        
+        List<String> processedLines = new ArrayList<>();
+        boolean inIdentificationDivision = false;
+        boolean inProgramId = false;
+        boolean foundProgramName = false;
+        
+        try (BufferedReader reader = new BufferedReader(new FileReader(inputFile))) {
+            String line;
+            int lineNum = 0;
+            
+            while ((line = reader.readLine()) != null) {
+                lineNum++;
+                String processed = preprocessLine(line, lineNum);
+                
+                if (processed == null) continue;
+                
+                String upperProcessed = processed.trim().toUpperCase();
+                
+                // CRITICAL FIX: Check for ANY division header FIRST, before other logic
+                if (isDivisionHeader(upperProcessed)) {
+                    System.out.println("🔒 PRESERVING DIVISION HEADER: " + processed);
+                    
+                    // Update state based on division
+                    if (upperProcessed.startsWith("IDENTIFICATION DIVISION")) {
+                        inIdentificationDivision = true;
+                    } else {
+                        inIdentificationDivision = false; // Exit ID division for any other division
+                    }
+                    
+                    processedLines.add(processed);
+                    continue;
+                }
+                
+                // Handle PROGRAM-ID section specially
+                if (upperProcessed.equals("PROGRAM-ID.")) {
+                    inProgramId = true;
+                    processedLines.add(processed);
+                    continue;
+                } else if (inProgramId && !foundProgramName) {
+                    // This should be the program name
+                    if (isValidProgramName(upperProcessed)) {
+                        foundProgramName = true;
+                        processedLines.add(processed);
+                        inProgramId = false;
+                        continue;
+                    }
+                }
+                
+                // In IDENTIFICATION DIVISION, be very selective
+                if (inIdentificationDivision) {
+                    if (isValidIdentificationEntry(upperProcessed)) {
+                        processedLines.add(processed);
+                    } else {
+                        System.out.println("Skipping ID division metadata: " + processed.trim());
+                    }
+                } else {
+                    // Outside IDENTIFICATION DIVISION, keep everything
+                    processedLines.add(processed);
+                }
+            }
+        }
+        
+        // Write processed file
+        try (PrintWriter writer = new PrintWriter(new FileWriter(outputFile))) {
+            for (String line : processedLines) {
+                writer.println(line);
+            }
+        }
+        
+        System.out.println("✅ Processed " + processedLines.size() + " lines");
+        System.out.println("📄 Output written to: " + outputFile);
+        
+        // Verify PROCEDURE DIVISION was preserved
+        boolean foundProcedure = false;
+        for (String line : processedLines) {
+            if (line.toUpperCase().contains("PROCEDURE") && line.toUpperCase().contains("DIVISION")) {
+                foundProcedure = true;
+                break;
+            }
+        }
+        
+        if (foundProcedure) {
+            System.out.println("✅ PROCEDURE DIVISION preserved successfully!");
+        } else {
+            System.out.println("❌ WARNING: PROCEDURE DIVISION not found in output!");
+        }
+        
+        // Show the processed content
+        System.out.println("\n📄 Processed COBOL content:");
+        System.out.println("-".repeat(50));
+        for (int i = 0; i < Math.min(processedLines.size(), 15); i++) {
+            System.out.println((i + 1) + ": " + processedLines.get(i));
+        }
+        if (processedLines.size() > 15) {
+            System.out.println("... (" + (processedLines.size() - 15) + " more lines)");
+        }
+    }
+    
+    // NEW METHOD: Check for any division header
+    private boolean isDivisionHeader(String upperLine) {
+        return (upperLine.contains("IDENTIFICATION") && upperLine.contains("DIVISION")) ||
+               (upperLine.contains("ENVIRONMENT") && upperLine.contains("DIVISION")) ||
+               (upperLine.contains("DATA") && upperLine.contains("DIVISION")) ||
+               (upperLine.contains("PROCEDURE") && upperLine.contains("DIVISION"));
+    }
+    
+    private String preprocessLine(String line, int lineNum) {
+        if (line.trim().isEmpty()) {
+            return null;
+        }
+        
+        String cleaned = line;
+        
+        // Detect and handle sequence numbers
+        boolean hasSequenceNumbers = false;
+        if (cleaned.length() >= 6) {
+            String firstSix = cleaned.substring(0, 6);
+            if (firstSix.matches("\\d{6}") || 
+                (firstSix.matches("\\d+\\s*") && cleaned.length() > 7 && 
+                 (cleaned.charAt(6) == ' ' || cleaned.charAt(6) == '*' || cleaned.charAt(6) == '/'))) {
+                hasSequenceNumbers = true;
+            }
+        }
+        
+        if (hasSequenceNumbers) {
+            cleaned = cleaned.substring(6); // Remove sequence numbers
+            
+            if (cleaned.length() > 0) {
+                char indicator = cleaned.charAt(0);
+                
+                // Skip comment lines
+                if (indicator == '*' || indicator == '/') {
+                    return null;
+                }
+                
+                // Handle continuation and normal lines
+                if (indicator == '-') {
+                    // Continuation line - preserve the content but mark it
+                    cleaned = cleaned.substring(1);
+                    // Don't add extra spaces for continuation
+                } else if (indicator == ' ' || Character.isWhitespace(indicator)) {
+                    cleaned = cleaned.substring(1);
+                } else if (indicator == 'D' || indicator == 'd') {
+                    cleaned = cleaned.substring(1);
+                } else {
+                    // Unknown indicator - keep as part of code
+                }
+            }
+        } else {
+            // Free format - check for comments
+            String trimmed = cleaned.trim();
+            if (trimmed.startsWith("*") || trimmed.startsWith("/")) {
+                return null;
+            }
+        }
+        
+        // Don't remove all trailing whitespace - preserve structure
+        cleaned = cleaned.replaceAll("\\s+$", "");
+        
+        // Make sure we don't return completely empty lines
+        if (cleaned.trim().isEmpty()) {
+            return null;
+        }
+        
+        return cleaned;
+    }
+    
+    private boolean isValidProgramName(String line) {
+        // Program name should be an identifier, possibly with dots
+        String trimmed = line.trim();
+        return trimmed.matches("[A-Z][A-Z0-9-]*\\.?") && trimmed.length() < 30;
+    }
+    
+    private boolean isValidIdentificationEntry(String upperLine) {
+        // Only allow standard IDENTIFICATION DIVISION entries
+        return upperLine.equals("AUTHOR.") ||
+               upperLine.equals("INSTALLATION.") ||
+               upperLine.equals("DATE-WRITTEN.") ||
+               upperLine.equals("DATE-COMPILED.") ||
+               upperLine.equals("SECURITY.") ||
+               upperLine.equals("REMARKS.");
+        // REMOVED the division checks from here since they're handled separately now
+    }
+    
+    // Test method to verify the fix
+    public static void testFix(String inputFile) throws IOException {
+        System.out.println("🧪 Testing FlexibleCobolPreprocessor with: " + inputFile);
+        
+        FlexibleCobolPreprocessor processor = new FlexibleCobolPreprocessor();
+        String outputFile = inputFile + ".fixed-test";
+        
+        processor.processFile(inputFile, outputFile);
+        
+        // Verify result
+        boolean foundProcedure = false;
+        int procedureLine = -1;
+        
+        try (BufferedReader reader = new BufferedReader(new FileReader(outputFile))) {
+            String line;
+            int lineNum = 0;
+            
+            while ((line = reader.readLine()) != null) {
+                lineNum++;
+                if (line.toUpperCase().contains("PROCEDURE") && line.toUpperCase().contains("DIVISION")) {
+                    foundProcedure = true;
+                    procedureLine = lineNum;
+                    break;
+                }
+            }
+        }
+        
+        System.out.println("\n🔍 TEST RESULTS:");
+        System.out.println("PROCEDURE DIVISION found: " + foundProcedure);
+        if (foundProcedure) {
+            System.out.println("PROCEDURE DIVISION at line: " + procedureLine);
+            System.out.println("✅ FIX SUCCESSFUL!");
+        } else {
+            System.out.println("❌ FIX FAILED!");
+        }
+    }
+}
+
