@@ -1,7 +1,8 @@
 /*
  * Cobol.g4 Grammar file to parse Cobol files into AST
- * This includes more modern constructs
+ * This includes more modern constructs from Cobol
  */
+
 grammar Cobol;
 
 // Parser Rules
@@ -557,7 +558,15 @@ pseudoTextContent : ~(PSEUDO_TEXT_DELIMITER)+ ;
 // Enhanced data description entries with proper level number support
 dataDescriptionEntryFormat4 : LEVEL_NUMBER_77 dataName dataClause* DOT ;
 
-dataDescriptionEntryFormat1 : integerLevelNumber (FILLER | dataName)? dataClause* DOT ;
+
+dataDescriptionEntryFormat1 : integerLevelNumber (FILLER | dataName)? dataPictureClause? dataValueClause? otherDataClause* DOT ;
+
+otherDataClause : dataRedefinesClause | dataIntegerStringClause | dataExternalClause | dataGlobalClause | dataTypeDefClause
+                | dataThreadLocalClause | dataCommonOwnLocalClause | dataTypeClause | dataUsingClause
+                | dataUsageClause | dataReceivedByClause | dataOccursClause | dataSignClause
+                | dataSynchronizedClause | dataJustifiedClause | dataBlankWhenZeroClause | dataWithLowerBoundsClause
+                | dataAlignedClause | dataRecordAreaClause | dataVolatileClause | dataBasedClause ;
+
 
 dataDescriptionEntryFormat2 : LEVEL_NUMBER_66 dataName dataRenamesClause DOT ;
 
@@ -613,12 +622,10 @@ dataUsageClause : (USAGE IS?)? (BINARY (TRUNCATED | EXTENDED)? | BIT | COMP | CO
                 | PACKED_DECIMAL | POINTER | PROCEDURE_POINTER | REAL | SQL | TASK | OBJECT_REFERENCE className?
                 | UTF_8 | UTF_16) ;
 
-dataValueClause : ((VALUE | VALUES) (IS | ARE)?)? dataValueInterval (COMMA_CHAR? dataValueInterval)* ;
 
+dataValueClause : ((VALUE | VALUES) (IS | ARE)?)? dataValueInterval ;
 dataValueInterval : dataValueIntervalFrom dataValueIntervalTo? ;
-
 dataValueIntervalFrom : literal | cobolWord ;
-
 dataValueIntervalTo : (THROUGH | THRU) literal ;
 
 dataReceivedByClause : RECEIVED? BY? (CONTENT | REFERENCE | REF) ;
@@ -653,8 +660,11 @@ dataBasedClause : BASED ON? qualifiedDataName ;
 
 dataRenamesClause : RENAMES qualifiedDataName ((THROUGH | THRU) qualifiedDataName)? ;
 
+
+// PROCEDURE DIVISION (relevant parts)
+
 procedureDivision : PROCEDURE DIVISION procedureDivisionUsingClause? procedureDivisionGivingClause? DOT
-                  procedureDeclaratives? procedureDivisionBody ;
+                  procedureDeclaratives? procedureDivisionBody END_PROGRAM? ;
 
 procedureDeclaratives : DECLARATIVES DOT procedureDeclarative+ END DECLARATIVES DOT ;
 
@@ -664,7 +674,7 @@ procedureSectionHeader : sectionName SECTION integerLiteral? ;
 
 procedureSection : procedureSectionHeader DOT paragraphs ;
 
-procedureDivisionBody : paragraphs procedureSection* ;
+procedureDivisionBody : (paragraph | procedureSection)* ;
 
 procedureDivisionUsingClause : (USING | CHAINING) procedureDivisionUsingParameter+ ;
 
@@ -680,11 +690,11 @@ procedureDivisionByValue : identifier | literal | ANY ;
 
 procedureDivisionGivingClause : GIVING (identifier | qualifiedDataName) ;
 
-paragraphs : sentence* paragraph* ;
+paragraphs : paragraph+ ;
 
-paragraph : paragraphName DOT? (alteredGoTo | sentence*) ;
+paragraph : paragraphName DOT sentence* ;
 
-sentence : statement* DOT ;
+sentence : statement+ DOT ;
 
 statement : acceptStatement | addStatement | alterStatement | allocateStatement | callStatement | cancelStatement
           | closeStatement | computeStatement | continueStatement | deleteStatement | disableStatement
@@ -697,7 +707,14 @@ statement : acceptStatement | addStatement | alterStatement | allocateStatement 
           | releaseStatement | resumeStatement | returnStatement | rewriteStatement | searchStatement
           | sendStatement | setStatement | sortStatement | startStatement | stopStatement | stringStatement
           | subtractStatement | terminateStatement | unstringStatement | writeStatement | xmlGenerateStatement
-          | xmlParseStatement ;
+          | xmlParseStatement
+          | execStatement // New rule for generic EXEC statements
+          | unknownStatement ; // Fallback for unrecognized statements
+
+execStatement : EXEC (SQL | CICS | IDENTIFIER) (~END_EXEC)* END_EXEC ;
+
+unknownStatement : IDENTIFIER (~DOT)* DOT ; // Catch-all for unrecognized statements
+
 
 acceptStatement : ACCEPT identifier (acceptFromDateStatement | acceptFromEscapeKeyStatement | acceptFromMnemonicStatement
                 | acceptMessageCountStatement)? onExceptionClause? notOnExceptionClause? END_ACCEPT? ;
@@ -995,6 +1012,10 @@ performInlineStatement : performType? statement* END_PERFORM ;
 
 performProcedureStatement : procedureName ((THROUGH | THRU) procedureName)? performType? ;
 
+procedureStatement : statement | errorStatement ;
+
+errorStatement : (~(DOT | DIVISION | SECTION | PARAGRAPH | END | EOF))+ DOT? ;
+
 performType : performTimes | performUntil | performVarying ;
 
 performTimes : (identifier | integerLiteral) TIMES ;
@@ -1068,9 +1089,12 @@ searchVarying : VARYING qualifiedDataName ;
 
 searchWhen : WHEN condition (NEXT SENTENCE | statement*) ;
 
-sendStatement : SEND (sendStatementSync | sendStatementAsync) onExceptionClause? notOnExceptionClause? ;
 
-sendStatementSync : (identifier | literal) sendFromPhrase? sendWithPhrase? sendReplacingPhrase? sendAdvancingPhrase? ;
+sendStatement : SEND (sendStatementSync | sendStatementAsync | sendStatementComm) onExceptionClause? notOnExceptionClause? END_SEND? ;
+
+sendStatementComm : cdName sendFromPhrase? (WITH (EGI | EMI | ESI | KEY (identifier | literal)))? ;
+
+sendStatementSync : SEND cdName (FROM identifier)? (WITH identifier)? END_SEND? ;
 
 sendStatementAsync : TO (TOP | BOTTOM) identifier ;
 
@@ -1738,11 +1762,13 @@ END_JSON : 'END-JSON' ;
 END_MULTIPLY : 'END-MULTIPLY' ;
 END_OF_PAGE : 'END-OF-PAGE' ;
 END_PERFORM : 'END-PERFORM' ;
+END_PROGRAM : 'END-PROGRAM' | 'END PROGRAM' ;
 END_READ : 'END-READ' ;
 END_RECEIVE : 'END-RECEIVE' ;
 END_RETURN : 'END-RETURN' ;
 END_REWRITE : 'END-REWRITE' ;
 END_SEARCH : 'END-SEARCH' ;
+END_SEND : 'END-SEND' | 'END SEND' ;
 END_START : 'END-START' ;
 END_STRING : 'END-STRING' ;
 END_SUBTRACT : 'END-SUBTRACT' ;
@@ -2139,4 +2165,5 @@ UNKNOWN : . ;
 
 // Enhanced identifier to handle COBOL naming conventions
 IDENTIFIER : [A-Za-z] [A-Za-z0-9]* ('-' [A-Za-z0-9]+)* ;
+
 
