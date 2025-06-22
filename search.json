@@ -1,0 +1,6 @@
+{
+    "action": "search",
+    "index_dir": "./lucene_index",
+    "query": "international wire transfer",
+    "top_k": 10
+}
