@@ -1,0 +1,5 @@
+{
+  "action": "index-dir",
+  "docs_dir": "./docs",
+  "index_dir": "./lucene_index"
+}
