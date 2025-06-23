@@ -1,0 +1,48 @@
+import java.util.*;
+
+/**
+ * Enhanced StructuralAnalysisResultV2 with data division support
+ */
+class StructuralAnalysisResultV2 {
+    private String programName;
+    private List<StructuralProcedureV2> procedures = new ArrayList<>();
+    private List<StructuralDataItemV2> dataItems = new ArrayList<>();
+    private List<DataDivisionPreprocessor.FileDescriptor> fileDescriptors = new ArrayList<>();
+    private List<StructuralStatementV2> sqlStatements = new ArrayList<>();
+    private List<StructuralStatementV2> copyStatements = new ArrayList<>();
+    private Map<String, Integer> statementCounts = new HashMap<>();
+    private Map<String, Integer> performReferences = new HashMap<>();
+    private List<String> parseWarnings = new ArrayList<>();
+    
+    // Getters and setters
+    public String getProgramName() { return programName; }
+    public void setProgramName(String programName) { this.programName = programName; }
+    
+    public List<StructuralProcedureV2> getProcedures() { return procedures; }
+    public void setProcedures(List<StructuralProcedureV2> procedures) { this.procedures = procedures; }
+    
+    public List<StructuralDataItemV2> getDataItems() { return dataItems; }
+    public void setDataItems(List<StructuralDataItemV2> dataItems) { this.dataItems = dataItems; }
+    
+    public List<DataDivisionPreprocessor.FileDescriptor> getFileDescriptors() { return fileDescriptors; }
+    public void setFileDescriptors(List<DataDivisionPreprocessor.FileDescriptor> fileDescriptors) { 
+        this.fileDescriptors = fileDescriptors; 
+    }
+    
+    public List<StructuralStatementV2> getSqlStatements() { return sqlStatements; }
+    public void setSqlStatements(List<StructuralStatementV2> sqlStatements) { this.sqlStatements = sqlStatements; }
+    
+    public List<StructuralStatementV2> getCopyStatements() { return copyStatements; }
+    public void setCopyStatements(List<StructuralStatementV2> copyStatements) { this.copyStatements = copyStatements; }
+    
+    public Map<String, Integer> getStatementCounts() { return statementCounts; }
+    public void setStatementCounts(Map<String, Integer> statementCounts) { this.statementCounts = statementCounts; }
+    
+    public Map<String, Integer> getPerformReferences() { return performReferences; }
+    public void setPerformReferences(Map<String, Integer> performReferences) { this.performReferences = performReferences; }
+    
+    public List<String> getParseWarnings() { return parseWarnings; }
+    public void setParseWarnings(List<String> parseWarnings) { this.parseWarnings = parseWarnings; }
+}
+
+
