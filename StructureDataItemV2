@@ -1,0 +1,55 @@
+/*
+ * Author: Yekesa Kosuru
+ */
+class StructuralDataItemV2 
+{
+    private String name;
+    private int level;
+    private String type;
+    private int lineNumber;
+    private String section;        // WORKING-STORAGE, FILE, LINKAGE
+    private String picture;        // PIC clause
+    private String usage;          // USAGE clause
+    private String value;          // VALUE clause
+    private String occurs;         // OCCURS clause
+    private String redefines;      // REDEFINES clause
+    
+    // Getters and setters
+    public String getName() { return name; }
+    public void setName(String name) { this.name = name; }
+    
+    public int getLevel() { return level; }
+    public void setLevel(int level) { this.level = level; }
+    
+    public String getType() { return type; }
+    public void setType(String type) { this.type = type; }
+    
+    public int getLineNumber() { return lineNumber; }
+    public void setLineNumber(int lineNumber) { this.lineNumber = lineNumber; }
+    
+    public String getSection() { return section; }
+    public void setSection(String section) { this.section = section; }
+    
+    public String getPicture() { return picture; }
+    public void setPicture(String picture) { this.picture = picture; }
+    
+    public String getUsage() { return usage; }
+    public void setUsage(String usage) { this.usage = usage; }
+    
+    public String getValue() { return value; }
+    public void setValue(String value) { this.value = value; }
+    
+    public String getOccurs() { return occurs; }
+    public void setOccurs(String occurs) { this.occurs = occurs; }
+    
+    public String getRedefines() { return redefines; }
+    public void setRedefines(String redefines) { this.redefines = redefines; }
+    
+    @Override
+    public String toString() {
+        return String.format("DataItem{level=%d, name='%s', section='%s', picture='%s'}", 
+                           level, name, section, picture);
+    }
+}
+
+
