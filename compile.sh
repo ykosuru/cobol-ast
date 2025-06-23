@@ -3,7 +3,7 @@
 rm *.class
 rm -fr __pycache__
 rm -f *.class *.tokens CobolPreprocessorL*.* *.interp *.tokens
-
+rm -fr CobolParserL*.java 
 
 # Colors for output
 RED='\033[0;31m'
@@ -11,7 +11,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}Building Cobol Preprocessor ...${NC}"
+echo -e "${GREEN}Building Cobol Parser ...${NC}"
 
 # Check if ANTLR jar exists
 ANTLR_JAR="antlr-4.13.2-complete.jar"
@@ -25,7 +25,9 @@ fi
 export CLASSPATH=".:$ANTLR_JAR:$CLASSPATH"
 
 echo -e "${YELLOW}Step 1: Generating ANTLR parser files...${NC}"
-java -jar $ANTLR_JAR -Dlanguage=Java -visitor CobolPreprocessor.g4
+#java -jar $ANTLR_JAR -Dlanguage=Java -visitor CobolPreprocessor.g4
+java -jar $ANTLR_JAR -Dlanguage=Java -visitor Cobol.g4
+
 if [ $? -ne 0 ]; then
     echo -e "${RED}Error: ANTLR generation failed!${NC}"
     exit 1
@@ -37,10 +39,7 @@ javac -cp .:$ANTLR_JAR *.java
 echo -e "${GREEN}Build successful!${NC}"
 echo ""
 echo "Usage examples:"
-echo "  python3 talTranspiler.py <input tal> ast"
-
-
-echo -e "${GREEN}Created run.sh convenience script${NC}"
 echo ""
 echo "Quick test:"
-echo "./run.sh sample.cbl out.cbl"
+echo "./run.sh WF.CBL"
+
