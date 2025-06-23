@@ -1,6 +1,5 @@
 /**
- * Add these missing variables and methods to your ASTParser class
- * Insert these at the appropriate locations in your class
+ * ASTParser based on Cobol.g4 levaring Visitor and Listener pattern
  * Author: Yekesa Kosuru
  */
 
