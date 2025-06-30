@@ -3,6 +3,7 @@ import java.util.*;
 /**
  * Enhanced StructuralAnalysisResultV2 with data division support
  */
+
 class StructuralAnalysisResultV2 {
     private String programName;
     private List<StructuralProcedureV2> procedures = new ArrayList<>();
@@ -44,5 +45,3 @@ class StructuralAnalysisResultV2 {
     public List<String> getParseWarnings() { return parseWarnings; }
     public void setParseWarnings(List<String> parseWarnings) { this.parseWarnings = parseWarnings; }
 }
-
-
