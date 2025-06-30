@@ -2,13 +2,8 @@ import java.util.*;
 import java.util.regex.Pattern;
 import java.io.*;
 
-/**
- * Parser Configuration
- * Author: Yekesa Kosuru
- */
-
-public class ParserConfiguration {
-    /* private variables */
+public class ParserConfiguration 
+{    
     private List<String> expectedProcedures;
     private List<Pattern> skipPatterns;
     private List<Pattern> procedurePatterns;
@@ -73,6 +68,7 @@ public class ParserConfiguration {
         }
         return procedurePatterns;
     }
+    
     
     public Set<String> getExcludedNames() {
         if (excludedNames == null) {
