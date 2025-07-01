@@ -1,0 +1,164 @@
+{
+  "transformationRules": [
+    {
+      "name": "COBOL File I/O to Reactive Streams",
+      "description": "Convert sequential file operations to reactive stream processing",
+      "overrideMode": false,
+      "cobolPatterns": [
+        "READ\\s+\\w+",
+        "WRITE\\s+\\w+",
+        "OPEN\\s+(INPUT|OUTPUT)\\s+\\w+",
+        "CLOSE\\s+\\w+"
+      ],
+      "procedureNamePatterns": [
+        ".*READ.*",
+        ".*FILE.*",
+        ".*INPUT.*",
+        ".*OUTPUT.*"
+      ],
+      "architecturalPatterns": [
+        "FILE_PROCESSING"
+      ],
+      "targetJavaPatterns": [
+        "Use Flux<T> for streaming file data",
+        "Resource management with Flux.using()",
+        "Non-blocking I/O with Spring WebFlux",
+        "Backpressure handling for large files"
+      ],
+      "targetReturnType": "Flux<FileRecord>",
+      "implementationGuidance": "Replace sequential file operations with reactive streams:\n• Use Flux.fromIterable() for reading file lines\n• Implement backpressure handling for large files\n• Use Flux.using() for automatic resource cleanup\n• Apply .publishOn() for I/O operations on separate thread pool\n• Consider chunked processing for memory efficiency",
+      "codeExamples": {
+        "File Reading Service": "@Service\npublic class FileProcessingService {\n    private final Scheduler ioScheduler = Schedulers.boundedElastic();\n    \n    public Flux<FileRecord> processFile(Path filePath) {\n        return Flux.using(\n            () -> Files.lines(filePath),\n            lines -> lines.map(this::parseRecord)\n                          .map(FileRecord::new)\n                          .onErrorContinue((ex, item) -> \n                              log.warn(\"Skipping invalid record: {}\", item)),\n            Stream::close\n        ).publishOn(ioScheduler)\n         .doOnComplete(() -> log.info(\"File processing completed: {}\", filePath));\n    }\n    \n    private FileRecord parseRecord(String line) {\n        // Custom parsing logic here\n        return new FileRecord(line);\n    }\n}",
+        "Chunked File Processing": "public Flux<List<FileRecord>> processFileInChunks(Path filePath, int chunkSize) {\n    return processFile(filePath)\n        .buffer(chunkSize)\n        .doOnNext(chunk -> log.debug(\"Processing chunk of {} records\", chunk.size()));\n}"
+      }
+    },
+    {
+      "name": "COBOL EVALUATE to Strategy Pattern",
+      "description": "Convert EVALUATE statements to Strategy pattern with functional interfaces",
+      "overrideMode": true,
+      "cobolPatterns": [
+        "EVALUATE\\s+\\w+",
+        "WHEN\\s+['\"]?\\w+['\"]?",
+        "WHEN\\s+OTHER"
+      ],
+      "procedureNamePatterns": [
+        ".*PROCESS.*TYPE.*",
+        ".*HANDLE.*",
+        ".*DISPATCH.*"
+      ],
+      "architecturalPatterns": [
+        "BUSINESS_LOGIC"
+      ],
+      "targetJavaPatterns": [
+        "Strategy Pattern with Function interfaces",
+        "Map-based dispatch for performance",
+        "Optional.ofNullable() for null safety",
+        "Enum-based type safety"
+      ],
+      "targetReturnType": "Mono<ProcessingResult>",
+      "implementationGuidance": "Convert EVALUATE logic to functional strategy pattern:\n• Create Map<Condition, Function> for dispatch\n• Use Optional.ofNullable() for safe navigation\n• Apply reactive error handling with onErrorReturn()\n• Consider caching strategies for frequently used conditions\n• Use enums for type-safe condition matching",
+      "codeExamples": {
+        "Strategy Pattern Implementation": "@Service\npublic class ProcessingStrategyService {\n    \n    private final Map<ProcessingType, Function<ProcessingInput, ProcessingResult>> strategies;\n    \n    public ProcessingStrategyService() {\n        this.strategies = Map.of(\n            ProcessingType.TYPE_A, this::processTypeA,\n            ProcessingType.TYPE_B, this::processTypeB,\n            ProcessingType.TYPE_C, this::processTypeC\n        );\n    }\n    \n    public Mono<ProcessingResult> processEvaluate(ProcessingType type, ProcessingInput input) {\n        return Mono.fromCallable(() -> \n            Optional.ofNullable(strategies.get(type))\n                    .orElse(this::processDefault)\n                    .apply(input)\n        )\n        .onErrorReturn(ProcessingResult.failed())\n        .doOnSuccess(result -> log.info(\"Processed {} with result: {}\", type, result.getStatus()));\n    }\n    \n    private ProcessingResult processDefault(ProcessingInput input) {\n        log.warn(\"Using default processing for input: {}\", input);\n        return ProcessingResult.defaultResult();\n    }\n}",
+        "Enum-based Type Safety": "public enum ProcessingType {\n    TYPE_A(\"Standard Processing\"),\n    TYPE_B(\"Premium Processing\"),\n    TYPE_C(\"Express Processing\");\n    \n    private final String description;\n    \n    ProcessingType(String description) {\n        this.description = description;\n    }\n    \n    public static ProcessingType fromCode(String code) {\n        return Arrays.stream(values())\n                     .filter(type -> type.name().equals(code))\n                     .findFirst()\n                     .orElse(TYPE_A); // Default fallback\n    }\n}"
+      }
+    },
+    {
+      "name": "COBOL EXEC SQL to R2DBC",
+      "description": "Convert embedded SQL to reactive R2DBC operations",
+      "overrideMode": false,
+      "cobolPatterns": [
+        "EXEC\\s+SQL",
+        "SELECT\\s+.*\\s+FROM",
+        "INSERT\\s+INTO",
+        "UPDATE\\s+.*\\s+SET",
+        "DELETE\\s+FROM"
+      ],
+      "procedureNamePatterns": [
+        ".*SQL.*",
+        ".*DB.*",
+        ".*DATABASE.*",
+        ".*QUERY.*"
+      ],
+      "architecturalPatterns": [
+        "DATABASE_ACCESS"
+      ],
+      "targetJavaPatterns": [
+        "R2DBC reactive database operations",
+        "Repository pattern with reactive types",
+        "Connection pooling with ConnectionFactory",
+        "Transaction management with @Transactional"
+      ],
+      "targetReturnType": "Mono<DatabaseResult>",
+      "implementationGuidance": "Replace EXEC SQL with reactive R2DBC:\n• Use DatabaseClient for complex queries\n• Implement proper connection management\n• Apply @Transactional for transactional boundaries\n• Use Mono.defer() for lazy evaluation of database operations\n• Implement retry logic for transient failures",
+      "codeExamples": {
+        "R2DBC Repository": "@Repository\npublic class VehicleRepository {\n    private final DatabaseClient client;\n    private final RetryTemplate retryTemplate;\n    \n    public VehicleRepository(DatabaseClient client) {\n        this.client = client;\n        this.retryTemplate = RetryTemplate.builder()\n            .maxAttempts(3)\n            .exponentialBackoff(Duration.ofMillis(100), 2, Duration.ofSeconds(1))\n            .retryOn(DataAccessException.class)\n            .build();\n    }\n    \n    @Transactional(readOnly = true)\n    public Mono<Vehicle> findById(Long id) {\n        return client.sql(\"SELECT * FROM vehicles WHERE id = :id\")\n                    .bind(\"id\", id)\n                    .map(this::mapToVehicle)\n                    .one()\n                    .retryWhen(Retry.from(retryTemplate))\n                    .onErrorResume(DataAccessException.class, ex -> {\n                        log.error(\"Database error finding vehicle {}\", id, ex);\n                        return Mono.empty();\n                    });\n    }\n    \n    @Transactional\n    public Mono<Vehicle> save(Vehicle vehicle) {\n        String sql = vehicle.getId() == null ? \n            \"INSERT INTO vehicles (vin, make, model, year) VALUES (:vin, :make, :model, :year)\" :\n            \"UPDATE vehicles SET vin = :vin, make = :make, model = :model, year = :year WHERE id = :id\";\n            \n        return client.sql(sql)\n                    .filter(Statement::returnGeneratedValues)\n                    .bind(\"vin\", vehicle.getVin())\n                    .bind(\"make\", vehicle.getMake())\n                    .bind(\"model\", vehicle.getModel())\n                    .bind(\"year\", vehicle.getYear())\n                    .fetch()\n                    .first()\n                    .map(result -> vehicle.withId((Long) result.get(\"id\")));\n    }\n}",
+        "Connection Factory Configuration": "@Configuration\npublic class DatabaseConfig {\n    \n    @Bean\n    public ConnectionFactory connectionFactory() {\n        return ConnectionFactories.get(ConnectionFactoryOptions.builder()\n            .option(DRIVER, \"postgresql\")\n            .option(HOST, \"localhost\")\n            .option(PORT, 5432)\n            .option(USER, \"username\")\n            .option(PASSWORD, \"password\")\n            .option(DATABASE, \"vehicle_db\")\n            .build());\n    }\n    \n    @Bean\n    public DatabaseClient databaseClient(ConnectionFactory factory) {\n        return DatabaseClient.create(factory);\n    }\n}"
+      }
+    },
+    {
+      "name": "COBOL Data Validation to Bean Validation",
+      "description": "Convert IF-based validation to declarative Bean Validation with custom validators",
+      "overrideMode": false,
+      "cobolPatterns": [
+        "IF\\s+.*\\s+INVALID",
+        "IF\\s+.*\\s+NOT\\s+NUMERIC",
+        "IF\\s+.*\\s+SPACES",
+        "IF\\s+.*\\s+ZERO",
+        "IF\\s+.*\\s+LOW-VALUE"
+      ],
+      "procedureNamePatterns": [
+        ".*VALID.*",
+        ".*CHECK.*",
+        ".*VERIFY.*",
+        ".*EDIT.*"
+      ],
+      "architecturalPatterns": [
+        "VALIDATION"
+      ],
+      "targetJavaPatterns": [
+        "Bean Validation with annotations",
+        "Custom validators for business rules",
+        "Functional validation with Predicates",
+        "Validation groups for different contexts"
+      ],
+      "targetReturnType": "Mono<ValidationResult>",
+      "implementationGuidance": "Convert procedural validation to declarative approach:\n• Use @Valid, @NotNull, @Pattern annotations\n• Create custom validators for complex business rules\n• Implement Validator<T> interface for functional validation\n• Collect all validation errors before returning result\n• Use validation groups for context-specific validation",
+      "codeExamples": {
+        "Bean Validation Model": "public class VehicleData {\n    @NotBlank(message = \"VIN cannot be blank\")\n    @Pattern(regexp = \"[A-HJ-NPR-Z0-9]{17}\", message = \"Invalid VIN format\")\n    @VinChecksum // Custom validator\n    private String vin;\n    \n    @NotNull(message = \"Year is required\")\n    @Min(value = 1900, message = \"Year must be after 1900\")\n    @Max(value = 2030, message = \"Year cannot be in the future\")\n    private Integer year;\n    \n    @NotBlank(message = \"Make is required\")\n    @Size(min = 2, max = 50, message = \"Make must be between 2 and 50 characters\")\n    private String make;\n    \n    @ValidEnum(enumClass = FuelType.class, message = \"Invalid fuel type\")\n    private String fuelType;\n    \n    // Getters and setters...\n}",
+        "Custom Validator": "@Component\npublic class VinChecksumValidator implements ConstraintValidator<VinChecksum, String> {\n    \n    @Override\n    public boolean isValid(String vin, ConstraintValidatorContext context) {\n        if (vin == null || vin.length() != 17) {\n            return false;\n        }\n        \n        // Implement VIN checksum algorithm\n        return calculateChecksum(vin) == vin.charAt(8);\n    }\n    \n    private char calculateChecksum(String vin) {\n        // VIN checksum calculation logic\n        // ...\n        return '0'; // Simplified\n    }\n}",
+        "Validation Service": "@Service\npublic class ValidationService {\n    private final Validator validator;\n    \n    public ValidationService(Validator validator) {\n        this.validator = validator;\n    }\n    \n    public Mono<ValidationResult> validate(VehicleData data) {\n        return Mono.fromCallable(() -> {\n            Set<ConstraintViolation<VehicleData>> violations = validator.validate(data);\n            return ValidationResult.from(violations);\n        })\n        .doOnNext(result -> {\n            if (!result.isValid()) {\n                log.warn(\"Validation failed for vehicle data: {}\", result.getErrors());\n            }\n        });\n    }\n    \n    public Mono<ValidationResult> validateForGroup(VehicleData data, Class<?> group) {\n        return Mono.fromCallable(() -> {\n            Set<ConstraintViolation<VehicleData>> violations = validator.validate(data, group);\n            return ValidationResult.from(violations);\n        });\n    }\n}"
+      }
+    },
+    {
+      "name": "COBOL Error Handling to Reactive Error Operators",
+      "description": "Convert COBOL error handling patterns to reactive error operators",
+      "overrideMode": false,
+      "cobolPatterns": [
+        "IF\\s+.*\\s+ERROR",
+        "IF\\s+FILE-STATUS\\s+NOT\\s+=\\s+['\"]00['\"]",
+        "IF\\s+SQLCODE\\s+NOT\\s+=\\s+0",
+        "ON\\s+ERROR",
+        "GO\\s+TO\\s+.*ERROR.*"
+      ],
+      "procedureNamePatterns": [
+        ".*ERROR.*",
+        ".*EXCEPTION.*",
+        ".*FAIL.*"
+      ],
+      "architecturalPatterns": [],
+      "targetJavaPatterns": [
+        "Reactive error operators (onErrorReturn, onErrorMap, onErrorResume)",
+        "Circuit breaker pattern for resilience",
+        "Retry with exponential backoff",
+        "Error logging and monitoring"
+      ],
+      "targetReturnType": "Mono<T>",
+      "implementationGuidance": "Replace procedural error handling with reactive patterns:\n• Use onErrorReturn() for default fallback values\n• Apply onErrorMap() to transform exceptions\n• Implement onErrorResume() for alternative flows\n• Add retry logic with exponential backoff\n• Include comprehensive error logging",
+      "codeExamples": {
+        "Reactive Error Handling": "@Service\npublic class ResilientProcessingService {\n    private static final int MAX_RETRIES = 3;\n    private static final Duration INITIAL_DELAY = Duration.ofMillis(100);\n    \n    public Mono<ProcessingResult> processWithErrorHandling(ProcessingInput input) {\n        return performProcessing(input)\n            .retryWhen(Retry.backoff(MAX_RETRIES, INITIAL_DELAY)\n                          .filter(this::isRetryableException)\n                          .doBeforeRetry(signal -> \n                              log.warn(\"Retrying processing, attempt: {}\", \n                                      signal.totalRetries() + 1)))\n            .onErrorMap(DatabaseException.class, \n                       ex -> new ProcessingException(\"Database error\", ex))\n            .onErrorReturn(ValidationException.class, \n                          ProcessingResult.validationFailed())\n            .onErrorResume(ProcessingException.class, \n                          ex -> fallbackProcessing(input, ex))\n            .doOnError(ex -> log.error(\"Processing failed for input: {}\", input, ex))\n            .doOnSuccess(result -> \n                log.info(\"Processing completed successfully: {}\", result));\n    }\n    \n    private boolean isRetryableException(Throwable ex) {\n        return ex instanceof TransientException || \n               ex instanceof TimeoutException;\n    }\n    \n    private Mono<ProcessingResult> fallbackProcessing(ProcessingInput input, \n                                                     ProcessingException ex) {\n        return Mono.fromCallable(() -> {\n            log.info(\"Using fallback processing for: {}\", input);\n            return ProcessingResult.fallbackResult(ex.getMessage());\n        });\n    }\n}",
+        "Circuit Breaker Integration": "@Component\npublic class CircuitBreakerService {\n    private final CircuitBreaker circuitBreaker;\n    \n    public CircuitBreakerService() {\n        this.circuitBreaker = CircuitBreaker.ofDefaults(\"processingService\");\n        circuitBreaker.getEventPublisher()\n                     .onStateTransition(event -> \n                         log.info(\"Circuit breaker state transition: {}\", event));\n    }\n    \n    public <T> Mono<T> executeWithCircuitBreaker(Supplier<Mono<T>> operation) {\n        return Mono.fromCallable(() -> circuitBreaker.executeSupplier(() -> operation.get()))\n                  .flatMap(mono -> mono)\n                  .onErrorMap(CallNotPermittedException.class, \n                            ex -> new ServiceUnavailableException(\"Service temporarily unavailable\"));\n    }\n}"
+      }
+    }
+  ]
+}
+
