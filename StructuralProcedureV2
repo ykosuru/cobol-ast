@@ -32,4 +32,3 @@ class StructuralProcedureV2
     public List<StructuralStatementV2> getStatements() { return statements; }
     public void setStatements(List<StructuralStatementV2> statements) { this.statements = statements; }
 }
-
