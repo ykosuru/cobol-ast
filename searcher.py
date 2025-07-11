@@ -1,52 +1,63 @@
 #!/usr/bin/env python3
 """
-TAL JIRA Ticket Searcher
+Standalone TAL Code Searcher
 
-This module analyzes JIRA tickets against TAL code indexes
-and prepares results for LLM consumption.
+This is a standalone searcher that uses only sklearn for similarity search.
+Accepts JIRA-style requirements and finds relevant TAL code fragments.
 """
 
 import os
 import pickle
 import json
-from typing import List, Dict, Tuple, Optional, Any
-from dataclasses import dataclass
+import sys
+from pathlib import Path
+
+# Check and install required packages
+def check_packages():
+    required = ['scikit-learn', 'numpy']
+    missing = []
+    
+    for package in required:
+        try:
+            __import__(package.replace('-', '_'))
+        except ImportError:
+            missing.append(package)
+    
+    if missing:
+        print(f"Installing missing packages: {', '.join(missing)}")
+        import subprocess
+        for pkg in missing:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
+
+check_packages()
+
 import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from sentence_transformers import SentenceTransformer
 
-
-@dataclass
 class CodeFragment:
     """Represents a fragment of TAL code with metadata."""
-    file_path: str
-    start_line: int
-    end_line: int
-    content: str
-    function_name: Optional[str] = None
-    procedure_name: Optional[str] = None
-    comments: List[str] = None
-    variables: List[str] = None
-    embedding: Optional[np.ndarray] = None
-    
-    def __post_init__(self):
-        if self.comments is None:
-            self.comments = []
-        if self.variables is None:
-            self.variables = []
+    def __init__(self, file_path, start_line, end_line, content, 
+                 procedure_name=None, function_name=None, comments=None, variables=None):
+        self.file_path = file_path
+        self.start_line = start_line
+        self.end_line = end_line
+        self.content = content
+        self.procedure_name = procedure_name
+        self.function_name = function_name
+        self.comments = comments or []
+        self.variables = variables or []
 
-
-@dataclass
-class JiraTicket:
-    """Represents a JIRA ticket with requirements."""
-    ticket_id: str
-    title: str
-    description: str
-    acceptance_criteria: List[str]
-    priority: str = "Medium"
+class RequirementInput:
+    """Represents user requirements (JIRA-style)."""
+    def __init__(self, ticket_id, title, description, acceptance_criteria):
+        self.ticket_id = ticket_id
+        self.title = title
+        self.description = description
+        self.acceptance_criteria = acceptance_criteria
     
-    def get_combined_text(self) -> str:
-        """Combine all ticket text for semantic analysis."""
+    def get_combined_text(self):
+        """Combine all requirement text for analysis."""
         combined = f"{self.title}\n\n{self.description}\n\n"
         if self.acceptance_criteria:
             combined += "Acceptance Criteria:\n"
@@ -54,406 +65,359 @@ class JiraTicket:
                 combined += f"{i}. {criteria}\n"
         return combined
 
-
-@dataclass 
 class CodeMatch:
-    """Represents a code fragment match with analysis."""
-    fragment: CodeFragment
-    similarity_score: float
-    matching_keywords: List[str]
-    relevance_reason: str
-    code_snippet: str
+    """Represents a matching code fragment with analysis."""
+    def __init__(self, fragment, similarity_score, matching_keywords, relevance_reason):
+        self.fragment = fragment
+        self.similarity_score = similarity_score
+        self.matching_keywords = matching_keywords
+        self.relevance_reason = relevance_reason
 
-
-class TALIndexLoader:
-    """Loads TAL semantic indexes for searching."""
+class StandaloneTALSearcher:
+    """Standalone TAL code searcher using sklearn only."""
     
     def __init__(self):
-        self.fragments: List[CodeFragment] = []
-        self.embeddings = None
+        self.fragments = []
         self.tfidf_vectorizer = None
         self.tfidf_matrix = None
-        self.model = None
-        self.index_metadata = {}
+        self.code_vectorizer = None
+        self.code_matrix = None
+        self.metadata = {}
+        
+        # Domain-specific keywords for wire processing and financial systems
+        self.keyword_domains = {
+            'iso20022_messages': ['iso20022', 'iso 20022', 'pacs', 'camt', 'pain', 'head', 'grphdr', 'msgid', 'crdt', 'dbtr', 'cdtr', 'instrid', 'endtoendid', 'txid', 'remittance', 'structured', 'unstructured'],
+            'swift_messages': ['swift', 'mt103', 'mt202', 'mt200', 'mt210', 'mt900', 'mt910', 'mt940', 'mt950', 'fin', 'swiftnet', 'rma', 'uetr', 'gpi', 'tracker', 'field20', 'field32a', 'field50k', 'field59', 'field70', 'field71a', 'field72'],
+            'payment_types': ['cover', 'payment', 'wire', 'transfer', 'drawdown', 'bulk', 'batch', 'individual', 'book', 'transfer', 'ach', 'fedwire', 'chips', 'target2', 'sepa', 'domestic', 'international', 'cross', 'border'],
+            'payment_validation': ['validation', 'validate', 'sanction', 'screening', 'ofac', 'kyc', 'aml', 'duplicate', 'check', 'verify', 'compliance', 'regulatory', 'format', 'field', 'mandatory', 'optional', 'conditional', 'cutoff', 'time'],
+            'financial_networks': ['fed', 'federal', 'reserve', 'chips', 'clearing', 'house', 'swift', 'correspondent', 'nostro', 'vostro', 'intermediary', 'bank', 'routing', 'aba', 'bic', 'iban', 'sort', 'code', 'participant', 'member'],
+            'funds_liquidity': ['funds', 'liquidity', 'balance', 'available', 'reserve', 'overdraft', 'credit', 'limit', 'insufficient', 'collateral', 'margin', 'exposure', 'settlement', 'prefund', 'postfund', 'intraday', 'daylight'],
+            'settlement_timing': ['settlement', 'value', 'date', 'future', 'dated', 'same', 'day', 'next', 'cut', 'off', 'real', 'time', 'rtgs', 'deferred', 'net', 'gross', 'batch', 'continuous', 'window', 'deadline'],
+            'message_routing': ['routing', 'route', 'destination', 'intermediary', 'correspondent', 'chain', 'path', 'hop', 'relay', 'forward', 'direct', 'indirect', 'via', 'through', 'network', 'queue', 'priority'],
+            'split_advising': ['split', 'advice', 'partial', 'remainder', 'portion', 'allocate', 'distribute', 'breakdown', 'segment', 'fraction', 'multiple', 'beneficiary', 'leg', 'component', 'division'],
+            'warehouse_processing': ['warehouse', 'store', 'staging', 'queue', 'batch', 'bulk', 'group', 'consolidate', 'aggregate', 'collect', 'release', 'hold', 'pending', 'defer', 'schedule', 'timer', 'trigger'],
+            'gsmos_operations': ['gsmos', 'global', 'standard', 'management', 'operating', 'system', 'maintenance', 'repair', 'configuration', 'parameter', 'setting', 'profile', 'template', 'workflow', 'process'],
+            'regulatory_compliance': ['regulation', 'compliance', 'audit', 'trail', 'log', 'monitor', 'report', 'exception', 'alert', 'threshold', 'limit', 'breach', 'violation', 'investigation', 'documentation'],
+            'error_handling': ['error', 'exception', 'reject', 'return', 'repair', 'retry', 'timeout', 'fail', 'recovery', 'rollback', 'compensate', 'manual', 'intervention', 'escalation', 'notification'],
+            'currency_fx': ['currency', 'foreign', 'exchange', 'fx', 'rate', 'conversion', 'cross', 'rate', 'base', 'quote', 'spread', 'markup', 'usd', 'eur', 'gbp', 'jpy', 'cad', 'aud', 'chf'],
+            'account_management': ['account', 'customer', 'beneficiary', 'ordering', 'party', 'debtor', 'creditor', 'ultimate', 'originator', 'receiver', 'agent', 'institution', 'branch', 'subsidiary'],
+            'charges_fees': ['charge', 'fee', 'commission', 'cost', 'expense', 'our', 'ben', 'sha', 'shared', 'bearer', 'waive', 'discount', 'premium', 'markup', 'spread'],
+            'security_encryption': ['security', 'encrypt', 'decrypt', 'digital', 'signature', 'certificate', 'authentication', 'authorization', 'token', 'key', 'hash', 'checksum', 'integrity'],
+            'database_operations': ['database', 'table', 'record', 'insert', 'update', 'select', 'delete', 'query', 'index', 'constraint', 'transaction', 'commit', 'rollback', 'lock', 'deadlock'],
+            'file_operations': ['file', 'read', 'write', 'copy', 'move', 'delete', 'archive', 'backup', 'restore', 'import', 'export', 'parse', 'format', 'convert', 'transform'],
+            'status_lifecycle': ['status', 'state', 'pending', 'processing', 'complete', 'failed', 'cancelled', 'expired', 'hold', 'release', 'approve', 'reject', 'return', 'repair'],
+            'reporting_analytics': ['report', 'analytics', 'statistics', 'metrics', 'kpi', 'dashboard', 'summary', 'detail', 'exception', 'trend', 'volume', 'performance', 'sla'],
+            'integration_apis': ['api', 'interface', 'integration', 'endpoint', 'service', 'microservice', 'rest', 'soap', 'xml', 'json', 'message', 'queue', 'broker', 'publish', 'subscribe']
+        }
     
-    def load_index(self, file_path: str) -> bool:
-        """Load the index from disk."""
+    def load_index(self, index_file_path):
+        """Load TAL index from file."""
         try:
-            print(f"Loading TAL index from {file_path}...")
+            print(f"Loading TAL index from {index_file_path}...")
             
-            with open(file_path, 'rb') as f:
+            with open(index_file_path, 'rb') as f:
                 index_data = pickle.load(f)
             
             self.fragments = index_data['fragments']
-            self.embeddings = index_data['embeddings']
             self.tfidf_vectorizer = index_data['tfidf_vectorizer']
             self.tfidf_matrix = index_data['tfidf_matrix']
-            self.index_metadata = index_data.get('metadata', {})
+            self.code_vectorizer = index_data.get('code_vectorizer')
+            self.code_matrix = index_data.get('code_matrix')
+            self.metadata = index_data.get('metadata', {})
             
-            # Initialize the same model used for indexing
-            model_name = self.index_metadata.get('model_name', 'all-MiniLM-L6-v2')
-            print(f"Loading sentence transformer model: {model_name}")
-            self.model = SentenceTransformer(model_name)
-            
-            print(f"Index loaded successfully!")
-            print(f"- Total fragments: {len(self.fragments)}")
-            print(f"- Total files: {self.index_metadata.get('total_files', 'unknown')}")
-            print(f"- Created: {self.index_metadata.get('created_at', 'unknown')}")
+            print(f"✅ Index loaded successfully!")
+            print(f"   - {len(self.fragments)} code fragments")
+            print(f"   - {self.metadata.get('total_files', 'unknown')} files")
+            print(f"   - Created: {self.metadata.get('created_at', 'unknown')}")
             
             return True
             
         except Exception as e:
-            print(f"Error loading index: {e}")
+            print(f"❌ Error loading index: {e}")
             return False
     
-    def search(self, query: str, top_k: int = 10, 
-               similarity_threshold: float = 0.1,
-               combine_methods: bool = True) -> List[Tuple[CodeFragment, float]]:
-        """Search for semantically similar code fragments."""
-        if not self.fragments or self.embeddings is None or self.model is None:
-            return []
-        
-        # Create query embedding
-        query_embedding = self.model.encode([query])
-        
-        # Calculate semantic similarity
-        semantic_similarities = cosine_similarity(query_embedding, self.embeddings)[0]
-        
-        results = []
-        
-        if combine_methods and self.tfidf_matrix is not None:
-            # Combine with TF-IDF similarity
-            query_tfidf = self.tfidf_vectorizer.transform([query])
-            tfidf_similarities = cosine_similarity(query_tfidf, self.tfidf_matrix)[0]
-            
-            # Weighted combination (favor semantic similarity)
-            combined_similarities = 0.7 * semantic_similarities + 0.3 * tfidf_similarities
-            similarities = combined_similarities
-        else:
-            similarities = semantic_similarities
-        
-        # Get top results
-        top_indices = np.argsort(similarities)[::-1][:top_k]
-        
-        for idx in top_indices:
-            if similarities[idx] >= similarity_threshold:
-                results.append((self.fragments[idx], float(similarities[idx])))
-        
-        return results
-
-
-class JiraCodeAnalyzer:
-    """Analyzes JIRA tickets against TAL code index for relevant matches."""
-    
-    def __init__(self, index_loader: TALIndexLoader):
-        self.index_loader = index_loader
-        self.keyword_extractors = {
-            'file_operations': ['file', 'read', 'write', 'copy', 'delete', 'move', 'archive', 'backup'],
-            'database_operations': ['database', 'table', 'record', 'insert', 'update', 'select', 'query', 'customer'],
-            'data_validation': ['validate', 'check', 'verify', 'sanitize', 'format', 'validate'],
-            'error_handling': ['error', 'exception', 'handle', 'catch', 'log', 'audit', 'fail'],
-            'calculation': ['calculate', 'compute', 'math', 'formula', 'total', 'sum', 'average', 'count'],
-            'reporting': ['report', 'export', 'generate', 'format', 'display', 'print', 'output'],
-            'security': ['secure', 'authenticate', 'authorize', 'permission', 'access', 'login'],
-            'performance': ['optimize', 'performance', 'speed', 'efficient', 'fast', 'cache'],
-            'date_time': ['date', 'time', 'timestamp', 'schedule', 'calendar', 'julian', 'year', 'month', 'day'],
-            'cleanup': ['cleanup', 'clean', 'purge', 'remove', 'temp', 'temporary', 'old', 'maintenance']
-        }
-    
-    def extract_keywords(self, text: str) -> Dict[str, List[str]]:
+    def extract_keywords(self, text):
         """Extract domain-specific keywords from text."""
         text_lower = text.lower()
         found_keywords = {}
         
-        for domain, keywords in self.keyword_extractors.items():
+        for domain, keywords in self.keyword_domains.items():
             found = [kw for kw in keywords if kw in text_lower]
             if found:
                 found_keywords[domain] = found
-                
+        
         return found_keywords
     
-    def analyze_ticket(self, ticket: JiraTicket, 
-                      similarity_threshold: float = 0.3,
-                      max_results: int = 10) -> Dict[str, Any]:
-        """Analyze JIRA ticket against code index."""
+    def search_similar_code(self, requirement, similarity_threshold=0.1, max_results=10):
+        """Search for code fragments similar to the requirement."""
+        if not self.fragments or self.tfidf_matrix is None:
+            print("❌ No index loaded. Please load an index first.")
+            return []
         
-        # Get combined ticket text for semantic search
-        ticket_text = ticket.get_combined_text()
+        # Get combined requirement text
+        requirement_text = requirement.get_combined_text()
         
-        # Extract keywords for domain classification
-        ticket_keywords = self.extract_keywords(ticket_text)
+        # Extract keywords for domain analysis
+        requirement_keywords = self.extract_keywords(requirement_text)
         
-        # Perform semantic search
-        search_results = self.index_loader.search(
-            ticket_text, 
-            top_k=max_results * 2,  # Get more results for filtering
-            similarity_threshold=similarity_threshold
-        )
+        # Transform requirement using TF-IDF
+        try:
+            query_tfidf = self.tfidf_vectorizer.transform([requirement_text])
+            tfidf_similarities = cosine_similarity(query_tfidf, self.tfidf_matrix)[0]
+        except Exception as e:
+            print(f"❌ Error in TF-IDF search: {e}")
+            return []
         
-        # Analyze each result
-        code_matches = []
-        for fragment, score in search_results:
-            match = self._analyze_fragment_match(fragment, score, ticket, ticket_keywords)
-            if match:
-                code_matches.append(match)
+        # Add code-specific similarity if available
+        if self.code_matrix is not None and self.code_vectorizer is not None:
+            try:
+                query_code = self.code_vectorizer.transform([requirement_text])
+                code_similarities = cosine_similarity(query_code, self.code_matrix)[0]
+                
+                # Combine similarities (70% general text, 30% code-specific)
+                combined_similarities = 0.7 * tfidf_similarities + 0.3 * code_similarities
+            except Exception:
+                combined_similarities = tfidf_similarities
+        else:
+            combined_similarities = tfidf_similarities
         
-        # Sort by relevance score
-        code_matches.sort(key=lambda x: x.similarity_score, reverse=True)
+        # Get top results
+        top_indices = np.argsort(combined_similarities)[::-1][:max_results * 2]  # Get extra for filtering
         
-        # Limit to max_results
-        code_matches = code_matches[:max_results]
+        # Analyze matches
+        matches = []
+        for idx in top_indices:
+            if combined_similarities[idx] >= similarity_threshold:
+                fragment = self.fragments[idx]
+                score = float(combined_similarities[idx])
+                
+                # Analyze the match
+                match_analysis = self._analyze_match(fragment, requirement, requirement_keywords, score)
+                if match_analysis:
+                    matches.append(match_analysis)
         
-        # Extract full procedures for highly relevant matches
-        full_procedures = self._extract_full_procedures(code_matches, score_threshold=0.6)
-        
-        return {
-            'ticket': ticket,
-            'ticket_keywords': ticket_keywords,
-            'code_matches': code_matches,
-            'full_procedures': full_procedures,
-            'summary': self._generate_analysis_summary(ticket, code_matches, ticket_keywords)
-        }
+        # Sort by score and limit results
+        matches.sort(key=lambda x: x.similarity_score, reverse=True)
+        return matches[:max_results]
     
-    def _analyze_fragment_match(self, fragment: CodeFragment, score: float, 
-                               ticket: JiraTicket, ticket_keywords: Dict[str, List[str]]) -> Optional[CodeMatch]:
-        """Analyze why a fragment matches and extract relevant snippet."""
+    def _analyze_match(self, fragment, requirement, requirement_keywords, score):
+        """Analyze why a fragment matches the requirement."""
         
         # Extract keywords from fragment
         fragment_text = f"{fragment.content} {' '.join(fragment.comments)}"
         fragment_keywords = self.extract_keywords(fragment_text)
         
-        # Find common keywords
+        # Find matching keywords
         matching_keywords = []
-        for domain in ticket_keywords:
+        for domain in requirement_keywords:
             if domain in fragment_keywords:
-                common = set(ticket_keywords[domain]) & set(fragment_keywords[domain])
+                common = set(requirement_keywords[domain]) & set(fragment_keywords[domain])
                 matching_keywords.extend(list(common))
         
-        # Generate relevance reason
-        relevance_reason = self._generate_relevance_reason(fragment, ticket_keywords, matching_keywords)
+        # Generate relevance explanation
+        relevance_reasons = []
         
-        # Extract most relevant code snippet (focus on key parts)
-        code_snippet = self._extract_relevant_snippet(fragment, ticket.get_combined_text())
+        if fragment.procedure_name:
+            relevance_reasons.append(f"Procedure '{fragment.procedure_name}'")
+        
+        if matching_keywords:
+            relevance_reasons.append(f"Keywords: {', '.join(set(matching_keywords))}")
+        
+        if fragment.comments:
+            # Check if comments contain requirement-related terms
+            req_words = set(requirement.get_combined_text().lower().split())
+            comment_words = set(' '.join(fragment.comments).lower().split())
+            common_comment_words = req_words & comment_words
+            if len(common_comment_words) > 2:
+                relevance_reasons.append(f"Comment overlap ({len(common_comment_words)} terms)")
+        
+        # Check for specific patterns
+        content_lower = fragment.content.lower()
+        if any(word in content_lower for word in ['error', 'validate', 'check']):
+            if any(word in requirement.get_combined_text().lower() for word in ['validate', 'check', 'verify']):
+                relevance_reasons.append("Validation/error handling logic")
+        
+        relevance_reason = "; ".join(relevance_reasons) if relevance_reasons else "Text similarity match"
         
         return CodeMatch(
             fragment=fragment,
             similarity_score=score,
-            matching_keywords=matching_keywords,
-            relevance_reason=relevance_reason,
-            code_snippet=code_snippet
+            matching_keywords=list(set(matching_keywords)),
+            relevance_reason=relevance_reason
         )
     
-    def _generate_relevance_reason(self, fragment: CodeFragment, 
-                                  ticket_keywords: Dict[str, List[str]], 
-                                  matching_keywords: List[str]) -> str:
-        """Generate explanation for why this fragment is relevant."""
-        reasons = []
+    def display_search_results(self, matches, requirement, show_full_code=False):
+        """Display search results in a formatted way."""
+        print(f"\n" + "="*80)
+        print(f"SEARCH RESULTS FOR: {requirement.ticket_id}")
+        print("="*80)
         
-        if fragment.procedure_name:
-            reasons.append(f"Procedure '{fragment.procedure_name}' found")
+        print(f"REQUIREMENT:")
+        print(f"Title: {requirement.title}")
+        print(f"Description: {requirement.description}")
         
-        if matching_keywords:
-            reasons.append(f"Matches keywords: {', '.join(set(matching_keywords))}")
+        if requirement.acceptance_criteria:
+            print(f"Acceptance Criteria:")
+            for i, criteria in enumerate(requirement.acceptance_criteria, 1):
+                print(f"  {i}. {criteria}")
         
-        if fragment.comments:
-            reasons.append(f"Contains {len(fragment.comments)} relevant comments")
+        if not matches:
+            print(f"\n❌ No matching code fragments found.")
+            return
         
-        # Check for specific patterns
-        content_lower = fragment.content.lower()
-        if 'error' in content_lower and 'handle' in content_lower:
-            reasons.append("Contains error handling logic")
+        print(f"\n📊 FOUND {len(matches)} RELEVANT CODE FRAGMENTS:")
+        print("="*80)
         
-        if 'validate' in content_lower or 'check' in content_lower:
-            reasons.append("Contains validation logic")
-        
-        if 'file' in content_lower and ('read' in content_lower or 'write' in content_lower):
-            reasons.append("Contains file operations")
-        
-        return "; ".join(reasons) if reasons else "Semantic similarity match"
-    
-    def _extract_relevant_snippet(self, fragment: CodeFragment, ticket_text: str) -> str:
-        """Extract the most relevant part of the code fragment."""
-        lines = fragment.content.split('\n')
-        
-        # If it's a short fragment, return all
-        if len(lines) <= 20:
-            return fragment.content
-        
-        # For longer fragments, try to find most relevant section
-        ticket_words = set(ticket_text.lower().split())
-        line_scores = []
-        
-        for i, line in enumerate(lines):
-            line_words = set(line.lower().split())
-            common_words = len(ticket_words & line_words)
-            line_scores.append((i, common_words))
-        
-        # Sort by relevance and get best section
-        line_scores.sort(key=lambda x: x[1], reverse=True)
-        
-        if line_scores[0][1] > 0:  # If we found relevant lines
-            best_line_idx = line_scores[0][0]
-            # Extract context around the best line
-            start = max(0, best_line_idx - 10)
-            end = min(len(lines), best_line_idx + 10)
-            snippet_lines = lines[start:end]
+        for i, match in enumerate(matches, 1):
+            fragment = match.fragment
+            print(f"\n{i}. SIMILARITY SCORE: {match.similarity_score:.3f}")
+            print(f"   FILE: {os.path.basename(fragment.file_path)}")
+            print(f"   LINES: {fragment.start_line}-{fragment.end_line}")
             
-            if start > 0:
-                snippet_lines.insert(0, "... (previous code)")
-            if end < len(lines):
-                snippet_lines.append("... (more code follows)")
+            if fragment.procedure_name:
+                print(f"   PROCEDURE: {fragment.procedure_name}")
+            if fragment.function_name:
+                print(f"   FUNCTION: {fragment.function_name}")
+            
+            print(f"   RELEVANCE: {match.relevance_reason}")
+            
+            if match.matching_keywords:
+                print(f"   KEYWORDS: {', '.join(match.matching_keywords)}")
+            
+            if fragment.comments:
+                print(f"   COMMENTS:")
+                for comment in fragment.comments[:3]:  # Show first 3 comments
+                    print(f"     ! {comment}")
+                if len(fragment.comments) > 3:
+                    print(f"     ... and {len(fragment.comments) - 3} more comments")
+            
+            print(f"\n   CODE:")
+            print("   " + "-"*60)
+            
+            if show_full_code:
+                # Show complete code with line numbers
+                for line_num, line in enumerate(fragment.content.split('\n'), fragment.start_line):
+                    print(f"   {line_num:4d}: {line}")
+            else:
+                # Show preview (first 12 lines)
+                lines = fragment.content.split('\n')
+                preview_lines = lines[:12]
                 
-            return '\n'.join(snippet_lines)
+                for line_num, line in enumerate(preview_lines, fragment.start_line):
+                    print(f"   {line_num:4d}: {line}")
+                
+                if len(lines) > 12:
+                    remaining = len(lines) - 12
+                    print(f"   ... ({remaining} more lines)")
+            
+            print("   " + "-"*60)
+        
+        print(f"\n📋 SUMMARY:")
+        print(f"   - Total matches: {len(matches)}")
+        print(f"   - Average similarity: {sum(m.similarity_score for m in matches) / len(matches):.3f}")
+        high_confidence = len([m for m in matches if m.similarity_score > 0.5])
+        print(f"   - High confidence matches (>0.5): {high_confidence}")
+    
+    def generate_llm_report(self, matches, requirement, output_file=None):
+        """Generate a report formatted for LLM consumption."""
+        
+        report_lines = []
+        report_lines.append("="*80)
+        report_lines.append("TAL CODE ANALYSIS REPORT FOR LLM")
+        report_lines.append("="*80)
+        
+        # Requirement section
+        report_lines.append(f"\nREQUIREMENT DETAILS:")
+        report_lines.append(f"Ticket ID: {requirement.ticket_id}")
+        report_lines.append(f"Title: {requirement.title}")
+        report_lines.append(f"\nDescription:")
+        report_lines.append(requirement.description)
+        
+        if requirement.acceptance_criteria:
+            report_lines.append(f"\nAcceptance Criteria:")
+            for i, criteria in enumerate(requirement.acceptance_criteria, 1):
+                report_lines.append(f"{i}. {criteria}")
+        
+        # Analysis section
+        if matches:
+            report_lines.append(f"\nANALYSIS RESULTS:")
+            report_lines.append(f"- Found {len(matches)} relevant code fragments")
+            avg_sim = sum(m.similarity_score for m in matches) / len(matches)
+            report_lines.append(f"- Average similarity score: {avg_sim:.3f}")
+            high_conf = len([m for m in matches if m.similarity_score > 0.5])
+            report_lines.append(f"- High confidence matches: {high_conf}")
+            
+            # Top procedures
+            procedures = [m.fragment.procedure_name for m in matches[:5] if m.fragment.procedure_name]
+            if procedures:
+                report_lines.append(f"- Top procedures: {', '.join(procedures)}")
+            
+            report_lines.append(f"\n" + "="*60)
+            report_lines.append("RELEVANT CODE FRAGMENTS")
+            report_lines.append("="*60)
+            
+            for i, match in enumerate(matches, 1):
+                fragment = match.fragment
+                report_lines.append(f"\n{i}. MATCH SCORE: {match.similarity_score:.3f}")
+                report_lines.append(f"   FILE: {fragment.file_path}")
+                report_lines.append(f"   LINES: {fragment.start_line}-{fragment.end_line}")
+                
+                if fragment.procedure_name:
+                    report_lines.append(f"   PROCEDURE: {fragment.procedure_name}")
+                
+                report_lines.append(f"   RELEVANCE: {match.relevance_reason}")
+                
+                if match.matching_keywords:
+                    report_lines.append(f"   KEYWORDS: {', '.join(match.matching_keywords)}")
+                
+                report_lines.append(f"\n   FULL CODE:")
+                report_lines.append("   " + "-"*50)
+                for line in fragment.content.split('\n'):
+                    report_lines.append(f"   {line}")
+                report_lines.append("   " + "-"*50)
         else:
-            # Return first 20 lines as fallback
-            return '\n'.join(lines[:20] + ['... (truncated)'])
-    
-    def _extract_full_procedures(self, code_matches: List[CodeMatch], 
-                                score_threshold: float = 0.6) -> List[Dict[str, Any]]:
-        """Extract full procedures for high-scoring matches."""
-        full_procedures = []
+            report_lines.append(f"\nNo relevant code fragments found.")
         
-        for match in code_matches:
-            if match.similarity_score >= score_threshold and match.fragment.procedure_name:
-                # Get the full procedure content
-                full_proc = {
-                    'procedure_name': match.fragment.procedure_name,
-                    'file_path': match.fragment.file_path,
-                    'full_content': match.fragment.content,
-                    'similarity_score': match.similarity_score,
-                    'relevance_reason': match.relevance_reason,
-                    'line_range': f"{match.fragment.start_line}-{match.fragment.end_line}",
-                    'comments': match.fragment.comments,
-                    'variables': match.fragment.variables
-                }
-                full_procedures.append(full_proc)
+        # LLM instructions
+        report_lines.append(f"\n" + "="*60)
+        report_lines.append("INSTRUCTIONS FOR LLM ANALYSIS")
+        report_lines.append("="*60)
+        report_lines.append("Please analyze the requirement and matching TAL code to:")
+        report_lines.append("1. Identify which existing procedures can be reused or adapted")
+        report_lines.append("2. Suggest implementation approach based on similar patterns")
+        report_lines.append("3. Highlight gaps where new code development is needed")
+        report_lines.append("4. Recommend best practices from the existing codebase")
+        report_lines.append("5. Estimate development effort based on code complexity")
+        report_lines.append("6. Provide specific code modifications or new procedures needed")
         
-        return full_procedures
-    
-    def _generate_analysis_summary(self, ticket: JiraTicket, 
-                                  code_matches: List[CodeMatch],
-                                  ticket_keywords: Dict[str, List[str]]) -> Dict[str, Any]:
-        """Generate analysis summary."""
+        report_content = '\n'.join(report_lines)
         
-        # Count matches by domain
-        domain_matches = {}
-        for match in code_matches:
-            for keyword in match.matching_keywords:
-                for domain, keywords in self.keyword_extractors.items():
-                    if keyword in keywords:
-                        domain_matches[domain] = domain_matches.get(domain, 0) + 1
+        # Save to file if requested
+        if output_file:
+            try:
+                with open(output_file, 'w', encoding='utf-8') as f:
+                    f.write(report_content)
+                print(f"\n📄 Report saved to: {output_file}")
+            except Exception as e:
+                print(f"❌ Error saving report: {e}")
         
-        # Get top procedures
-        top_procedures = [m.fragment.procedure_name for m in code_matches 
-                         if m.fragment.procedure_name][:5]
-        
-        return {
-            'total_matches': len(code_matches),
-            'avg_similarity': sum(m.similarity_score for m in code_matches) / len(code_matches) if code_matches else 0,
-            'domains_found': list(domain_matches.keys()),
-            'top_procedures': top_procedures,
-            'ticket_keywords': ticket_keywords,
-            'high_confidence_matches': len([m for m in code_matches if m.similarity_score > 0.7])
-        }
-    
-    def format_for_llm(self, analysis_result: Dict[str, Any]) -> str:
-        """Format the analysis results for LLM consumption."""
-        
-        ticket = analysis_result['ticket']
-        code_matches = analysis_result['code_matches']
-        full_procedures = analysis_result['full_procedures']
-        summary = analysis_result['summary']
-        
-        # Build formatted output
-        output = []
-        output.append("="*80)
-        output.append("JIRA TICKET ANALYSIS FOR LLM PROCESSING")
-        output.append("="*80)
-        
-        # Ticket Information
-        output.append(f"\nTICKET: {ticket.ticket_id}")
-        output.append(f"TITLE: {ticket.title}")
-        output.append(f"PRIORITY: {ticket.priority}")
-        
-        output.append(f"\nDESCRIPTION:")
-        output.append(ticket.description)
-        
-        if ticket.acceptance_criteria:
-            output.append(f"\nACCEPTANCE CRITERIA:")
-            for i, criteria in enumerate(ticket.acceptance_criteria, 1):
-                output.append(f"{i}. {criteria}")
-        
-        # Analysis Summary
-        output.append(f"\nANALYSIS SUMMARY:")
-        output.append(f"- Total code matches found: {summary['total_matches']}")
-        output.append(f"- Average similarity score: {summary['avg_similarity']:.3f}")
-        output.append(f"- High confidence matches: {summary['high_confidence_matches']}")
-        output.append(f"- Relevant domains: {', '.join(summary['domains_found'])}")
-        output.append(f"- Top procedures: {', '.join(summary['top_procedures'])}")
-        
-        # Full Procedures (High Relevance)
-        if full_procedures:
-            output.append(f"\n" + "="*60)
-            output.append("FULL PROCEDURES (HIGH RELEVANCE)")
-            output.append("="*60)
-            
-            for i, proc in enumerate(full_procedures, 1):
-                output.append(f"\n{i}. PROCEDURE: {proc['procedure_name']}")
-                output.append(f"   FILE: {proc['file_path']}")
-                output.append(f"   LINES: {proc['line_range']}")
-                output.append(f"   SIMILARITY: {proc['similarity_score']:.3f}")
-                output.append(f"   RELEVANCE: {proc['relevance_reason']}")
-                output.append(f"\n   FULL CODE:")
-                output.append("   " + "-"*50)
-                for line in proc['full_content'].split('\n'):
-                    output.append(f"   {line}")
-                output.append("   " + "-"*50)
-        
-        # Code Snippets
-        output.append(f"\n" + "="*60)
-        output.append("RELEVANT CODE SNIPPETS")
-        output.append("="*60)
-        
-        for i, match in enumerate(code_matches[:10], 1):  # Limit to top 10
-            output.append(f"\n{i}. MATCH SCORE: {match.similarity_score:.3f}")
-            output.append(f"   FILE: {match.fragment.file_path}")
-            output.append(f"   LINES: {match.fragment.start_line}-{match.fragment.end_line}")
-            
-            if match.fragment.procedure_name:
-                output.append(f"   PROCEDURE: {match.fragment.procedure_name}")
-            
-            output.append(f"   RELEVANCE: {match.relevance_reason}")
-            output.append(f"   KEYWORDS: {', '.join(match.matching_keywords)}")
-            
-            output.append(f"\n   CODE SNIPPET:")
-            output.append("   " + "-"*40)
-            for line in match.code_snippet.split('\n'):
-                output.append(f"   {line}")
-            output.append("   " + "-"*40)
-        
-        # Instructions for LLM
-        output.append(f"\n" + "="*60)
-        output.append("INSTRUCTIONS FOR LLM")
-        output.append("="*60)
-        output.append("\nPlease analyze the above JIRA ticket requirements and TAL code matches to:")
-        output.append("1. Identify which existing procedures can be reused or modified")
-        output.append("2. Suggest implementation approach based on similar existing code")
-        output.append("3. Highlight any gaps where new code needs to be written")
-        output.append("4. Recommend best practices based on the existing codebase patterns")
-        output.append("5. Estimate development effort based on complexity of similar existing code")
-        output.append("6. Provide specific code modifications or new procedures needed")
-        
-        return '\n'.join(output)
+        return report_content
 
-
-def parse_jira_ticket() -> JiraTicket:
-    """Interactive function to create a JIRA ticket."""
-    print("\n=== JIRA Ticket Input ===")
+def get_user_requirement():
+    """Interactive function to get requirement from user."""
+    print(f"\n" + "="*60)
+    print("ENTER REQUIREMENT DETAILS")
+    print("="*60)
     
-    ticket_id = input("Enter JIRA Ticket ID (e.g., PROJ-123): ").strip()
-    title = input("Enter ticket title: ").strip()
+    # Get basic info
+    ticket_id = input("Ticket ID (e.g., PROJ-123): ").strip()
+    if not ticket_id:
+        ticket_id = "REQ-001"
     
-    print("\nEnter ticket description (press Enter twice when done):")
+    title = input("Requirement title: ").strip()
+    
+    # Get multi-line description
+    print(f"\nEnter requirement description (press Enter twice when done):")
     description_lines = []
     empty_line_count = 0
     
@@ -474,7 +438,8 @@ def parse_jira_ticket() -> JiraTicket:
     
     description = '\n'.join(description_lines)
     
-    print("\nEnter acceptance criteria (one per line, empty line to finish):")
+    # Get acceptance criteria
+    print(f"\nEnter acceptance criteria (one per line, empty line to finish):")
     acceptance_criteria = []
     while True:
         criteria = input(f"  {len(acceptance_criteria) + 1}. ").strip()
@@ -482,266 +447,97 @@ def parse_jira_ticket() -> JiraTicket:
             break
         acceptance_criteria.append(criteria)
     
-    priority = input("Enter priority (Low/Medium/High) [Medium]: ").strip() or "Medium"
-    
-    return JiraTicket(
-        ticket_id=ticket_id,
-        title=title,
-        description=description,
-        acceptance_criteria=acceptance_criteria,
-        priority=priority
-    )
-
-
-def load_jira_from_file(file_path: str) -> Optional[JiraTicket]:
-    """Load JIRA ticket from JSON file."""
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        
-        return JiraTicket(
-            ticket_id=data['ticket_id'],
-            title=data['title'],
-            description=data['description'],
-            acceptance_criteria=data.get('acceptance_criteria', []),
-            priority=data.get('priority', 'Medium')
-        )
-    except Exception as e:
-        print(f"Error loading JIRA ticket from file: {e}")
-        return None
-
-
-def save_jira_template(file_path: str):
-    """Save a JIRA ticket template JSON file."""
-    template = {
-        "ticket_id": "PROJ-123",
-        "title": "Example ticket title",
-        "description": "Detailed description of the requirement...",
-        "acceptance_criteria": [
-            "First acceptance criteria",
-            "Second acceptance criteria",
-            "Third acceptance criteria"
-        ],
-        "priority": "Medium"
-    }
-    
-    with open(file_path, 'w', encoding='utf-8') as f:
-        json.dump(template, f, indent=2)
-    
-    print(f"JIRA ticket template saved to: {file_path}")
-
+    return RequirementInput(ticket_id, title, description, acceptance_criteria)
 
 def main():
     """Main searcher application."""
-    
     print("="*60)
-    print("TAL JIRA TICKET SEARCHER")
+    print("STANDALONE TAL CODE SEARCHER")
     print("="*60)
-    
-    # Initialize index loader
-    index_loader = TALIndexLoader()
     
     # Load index
-    while True:
-        index_file = input("Enter path to TAL index file (default: tal_semantic_index.pkl): ").strip()
-        if not index_file:
-            index_file = "tal_semantic_index.pkl"
-        
-        if os.path.exists(index_file):
-            if index_loader.load_index(index_file):
-                break
-            else:
-                print("Failed to load index. Please try again.")
-        else:
-            print(f"Index file not found: {index_file}")
-            print("Please run the TAL indexer first to create an index.")
-            
-            create_choice = input("Would you like to specify a different path? (y/n): ").strip().lower()
-            if create_choice not in ['y', 'yes']:
-                return
+    if len(sys.argv) > 1:
+        index_file = sys.argv[1]
+    else:
+        index_file = input("Enter path to TAL index file (*.pkl): ").strip()
     
-    # Initialize analyzer
-    analyzer = JiraCodeAnalyzer(index_loader)
+    if not os.path.exists(index_file):
+        print(f"❌ Error: Index file not found: {index_file}")
+        return False
     
-    print("\n=== TAL JIRA Ticket Analysis ===")
+    # Initialize searcher and load index
+    searcher = StandaloneTALSearcher()
+    if not searcher.load_index(index_file):
+        return False
     
     while True:
-        print("\nChoose an option:")
-        print("1. Analyze JIRA ticket (interactive input)")
-        print("2. Analyze JIRA ticket from JSON file")
-        print("3. Create JIRA ticket template")
-        print("4. Simple code search")
-        print("5. View index statistics")
-        print("6. Exit")
+        print(f"\n" + "="*60)
+        print("SEARCH OPTIONS")
+        print("="*60)
+        print("1. Enter new requirement and search")
+        print("2. Quick text search")
+        print("3. Exit")
         
-        choice = input("\nEnter choice (1-6): ").strip()
+        choice = input("\nEnter choice (1-3): ").strip()
         
         if choice == "1":
-            # Interactive JIRA ticket input
-            ticket = parse_jira_ticket()
+            # Full requirement analysis
+            requirement = get_user_requirement()
             
-            print(f"\nAnalyzing ticket {ticket.ticket_id} against TAL codebase...")
-            
-            # Get analysis parameters
-            threshold = input("Enter similarity threshold (0.0-1.0, default: 0.2): ").strip()
+            # Search parameters
             try:
-                threshold = float(threshold) if threshold else 0.2
+                threshold = input(f"\nSimilarity threshold (0.0-1.0, default: 0.1): ").strip()
+                threshold = float(threshold) if threshold else 0.1
             except ValueError:
-                threshold = 0.2
+                threshold = 0.1
             
-            max_results = input("Enter max results (default: 15): ").strip()
             try:
-                max_results = int(max_results) if max_results else 15
+                max_results = input(f"Max results (default: 8): ").strip()
+                max_results = int(max_results) if max_results else 8
             except ValueError:
-                max_results = 15
+                max_results = 8
             
-            # Perform analysis
-            analysis_result = analyzer.analyze_ticket(
-                ticket, 
-                similarity_threshold=threshold, 
-                max_results=max_results
-            )
+            # Perform search
+            print(f"\n🔍 Searching for relevant TAL code...")
+            matches = searcher.search_similar_code(requirement, threshold, max_results)
             
-            # Format for LLM
-            llm_output = analyzer.format_for_llm(analysis_result)
+            # Display results
+            show_full = input("Show full code in results? (y/n, default: n): ").strip().lower()
+            searcher.display_search_results(matches, requirement, show_full in ['y', 'yes'])
             
-            # Save to file
-            output_filename = f"jira_analysis_{ticket.ticket_id.replace('-', '_')}.txt"
-            with open(output_filename, 'w', encoding='utf-8') as f:
-                f.write(llm_output)
-            
-            print(f"\nAnalysis complete! Results saved to: {output_filename}")
-            print("\nSummary:")
-            summary = analysis_result['summary']
-            print(f"- Found {summary['total_matches']} relevant code matches")
-            print(f"- Average similarity: {summary['avg_similarity']:.3f}")
-            print(f"- High confidence matches: {summary['high_confidence_matches']}")
-            print(f"- Relevant domains: {', '.join(summary['domains_found']) if summary['domains_found'] else 'None'}")
-            
-            # Show preview
-            if analysis_result['code_matches']:
-                print(f"\nTop 3 matches preview:")
-                for i, match in enumerate(analysis_result['code_matches'][:3], 1):
-                    print(f"\n{i}. {match.fragment.procedure_name or 'Code Fragment'}")
-                    print(f"   File: {match.fragment.file_path}")
-                    print(f"   Similarity: {match.similarity_score:.3f}")
-                    print(f"   Reason: {match.relevance_reason}")
+            # Generate LLM report
+            if matches:
+                save_report = input(f"\nGenerate LLM report? (y/n): ").strip().lower()
+                if save_report in ['y', 'yes']:
+                    report_file = f"tal_analysis_{requirement.ticket_id.replace('-', '_')}.txt"
+                    searcher.generate_llm_report(matches, requirement, report_file)
         
         elif choice == "2":
-            # Load JIRA ticket from file
-            file_path = input("Enter path to JIRA JSON file: ").strip()
-            
-            if os.path.exists(file_path):
-                ticket = load_jira_from_file(file_path)
-                if ticket:
-                    print(f"\nLoaded ticket: {ticket.ticket_id} - {ticket.title}")
-                    
-                    # Perform analysis with default parameters
-                    analysis_result = analyzer.analyze_ticket(ticket, similarity_threshold=0.2, max_results=15)
-                    
-                    # Format for LLM
-                    llm_output = analyzer.format_for_llm(analysis_result)
-                    
-                    # Save to file
-                    output_filename = f"jira_analysis_{ticket.ticket_id.replace('-', '_')}.txt"
-                    with open(output_filename, 'w', encoding='utf-8') as f:
-                        f.write(llm_output)
-                    
-                    print(f"Analysis complete! Results saved to: {output_filename}")
-            else:
-                print(f"File not found: {file_path}")
+            # Quick text search
+            query = input("\nEnter search text: ").strip()
+            if query:
+                # Create a simple requirement
+                simple_req = RequirementInput("SEARCH-001", "Quick Search", query, [])
+                
+                matches = searcher.search_similar_code(simple_req, 0.05, 5)
+                searcher.display_search_results(matches, simple_req, False)
         
         elif choice == "3":
-            # Create JIRA template
-            template_path = input("Enter path for template file (default: jira_template.json): ").strip()
-            if not template_path:
-                template_path = "jira_template.json"
-            
-            save_jira_template(template_path)
-        
-        elif choice == "4":
-            # Simple code search
-            while True:
-                query = input("\nEnter search query (empty to return to menu): ").strip()
-                if not query:
-                    break
-                
-                results = index_loader.search(query, top_k=5)
-                
-                if results:
-                    print(f"\nFound {len(results)} similar code fragments:")
-                    for i, (fragment, score) in enumerate(results, 1):
-                        print(f"\n{i}. Similarity: {score:.3f}")
-                        print(f"   File: {fragment.file_path}")
-                        print(f"   Lines: {fragment.start_line}-{fragment.end_line}")
-                        if fragment.procedure_name:
-                            print(f"   Procedure: {fragment.procedure_name}")
-                        
-                        # Show first few lines of code
-                        code_lines = fragment.content.split('\n')[:3]
-                        print(f"   Code preview:")
-                        for line in code_lines:
-                            print(f"     {line}")
-                        print("     ...")
-                else:
-                    print("No similar code fragments found.")
-        
-        elif choice == "5":
-            # View index statistics  
-            if hasattr(index_loader, 'index_metadata') and index_loader.index_metadata:
-                print("\n" + "="*40)
-                print("INDEX STATISTICS")
-                print("="*40)
-                print(f"Total fragments: {len(index_loader.fragments)}")
-                print(f"Total files: {index_loader.index_metadata.get('total_files', 'unknown')}")
-                print(f"Model used: {index_loader.index_metadata.get('model_name', 'unknown')}")
-                print(f"Created at: {index_loader.index_metadata.get('created_at', 'unknown')}")
-                
-                # Count procedures and functions
-                procedures = sum(1 for f in index_loader.fragments if f.procedure_name)
-                functions = sum(1 for f in index_loader.fragments if f.function_name)
-                print(f"Procedures found: {procedures}")
-                print(f"Functions found: {functions}")
-            else:
-                print("No index statistics available.")
-        
-        elif choice == "6":
             print("Goodbye!")
             break
         
         else:
-            print("Invalid choice. Please enter 1-6.")
-
+            print("Invalid choice. Please enter 1, 2, or 3.")
+    
+    return True
 
 if __name__ == "__main__":
-    # Check required packages
-    import subprocess
-    import sys
-    
-    required_packages = [
-        "sentence-transformers",
-        "scikit-learn", 
-        "numpy"
-    ]
-    
-    print("Checking required packages...")
-    missing_packages = []
-    
-    for package in required_packages:
-        try:
-            __import__(package.replace('-', '_'))
-        except ImportError:
-            missing_packages.append(package)
-    
-    if missing_packages:
-        print(f"Missing packages: {', '.join(missing_packages)}")
-        install_choice = input("Install missing packages? (y/n): ").strip().lower()
-        if install_choice in ['y', 'yes']:
-            for package in missing_packages:
-                print(f"Installing {package}...")
-                subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-        else:
-            print("Cannot proceed without required packages.")
-            exit(1)
-    
-    main()
+    try:
+        success = main()
+        sys.exit(0 if success else 1)
+    except KeyboardInterrupt:
+        print("\n\nOperation cancelled by user.")
+        sys.exit(1)
+    except Exception as e:
+        print(f"\n❌ Unexpected error: {e}")
+        sys.exit(1)
