@@ -1,387 +1,545 @@
 #!/usr/bin/env python3
 """
-Simple TAL Source Code Indexer - Standalone Version
+TAL Corpus Indexer
 
-This is a simplified, standalone version that avoids import issues.
-Run this to index TAL files and save to local directory.
+Creates semantic indexes of TAL source code files with chunks, vectors, and topics.
+Saves the processed corpus for later searching.
 """
 
 import os
 import re
 import json
 import pickle
+import math
+import random
 import sys
+import hashlib
+from collections import defaultdict, Counter
 from pathlib import Path
 
-# Check and install required packages
-def check_packages():
-    required = ['scikit-learn', 'numpy']
-    missing = []
-    
-    for package in required:
-        try:
-            __import__(package.replace('-', '_'))
-        except ImportError:
-            missing.append(package)
-    
-    if missing:
-        print(f"Installing missing packages: {', '.join(missing)}")
-        import subprocess
-        for pkg in missing:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
-
-check_packages()
-
-import numpy as np
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-
-class CodeFragment:
-    """Represents a fragment of TAL code with metadata."""
-    def __init__(self, file_path, start_line, end_line, content, 
-                 procedure_name=None, function_name=None, comments=None, variables=None):
-        self.file_path = file_path
+class SimpleChunk:
+    """Simplified chunk representation."""
+    def __init__(self, content, source_file, chunk_id, start_line=0, end_line=0, procedure_name=""):
+        self.content = content
+        self.source_file = source_file
+        self.chunk_id = chunk_id
         self.start_line = start_line
         self.end_line = end_line
-        self.content = content
         self.procedure_name = procedure_name
-        self.function_name = function_name
-        self.comments = comments or []
-        self.variables = variables or []
+        
+        # Extract basic info
+        self.words = re.findall(r'\b[a-zA-Z_][a-zA-Z0-9_]*\b', content.lower())
+        self.word_count = len(self.words)
+        self.char_count = len(content)
+        
+        # Will be filled by vectorizer
+        self.tfidf_vector = []
+        self.topic_distribution = []
+        self.dominant_topic = -1
+        self.dominant_topic_prob = 0.0
+        self.keywords = []
 
-class TALParser:
-    """Parser for TAL source code to extract semantic components."""
+class TALChunker:
+    """Chunks TAL files by procedures and logical blocks."""
     
     def __init__(self):
-        # Regex patterns for TAL constructs
-        self.patterns = {
-            'procedure': re.compile(r'^\s*(?:PROC|SUBPROC)\s+(\w+)', re.IGNORECASE | re.MULTILINE),
-            'function': re.compile(r'^\s*(\w+)\s*\([^)]*\)\s*;', re.IGNORECASE | re.MULTILINE),
-            'comment': re.compile(r'!\s*(.*)$', re.MULTILINE),
-            'variable': re.compile(r'^\s*(?:INT|REAL|STRING|STRUCT)\s+(\w+)', re.IGNORECASE | re.MULTILINE),
-            'define': re.compile(r'^\s*\?DEFINE\s+(\w+)', re.IGNORECASE | re.MULTILINE),
-            'literal': re.compile(r'^\s*LITERAL\s+(\w+)', re.IGNORECASE | re.MULTILINE)
-        }
+        self.procedure_pattern = re.compile(r'^\s*(?:PROC|SUBPROC)\s+(\w+)', re.IGNORECASE | re.MULTILINE)
     
-    def parse_file(self, file_path):
-        """Parse a TAL file and extract code fragments."""
+    def chunk_file(self, file_path):
+        """Chunk a single TAL file."""
         try:
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
         except Exception as e:
-            print(f"Error reading file {file_path}: {e}")
+            print(f"Error reading {file_path}: {e}")
             return []
         
-        fragments = []
-        blocks = self._split_into_blocks(content)
-        
-        for block in blocks:
-            fragment = self._create_fragment(file_path, block)
-            if fragment:
-                fragments.append(fragment)
-        
-        return fragments
-    
-    def _split_into_blocks(self, content):
-        """Split content into logical code blocks."""
-        lines = content.split('\n')
-        blocks = []
-        current_block = []
-        block_start = 0
-        in_proc = False
-        proc_depth = 0
-        
-        for i, line in enumerate(lines):
-            line_stripped = line.strip().upper()
-            
-            if line_stripped.startswith('PROC ') or line_stripped.startswith('SUBPROC '):
-                if current_block:
-                    blocks.append({
-                        'content': '\n'.join(current_block),
-                        'start_line': block_start,
-                        'end_line': i - 1
-                    })
-                current_block = [line]
-                block_start = i
-                in_proc = True
-                proc_depth = 1
-            elif in_proc:
-                current_block.append(line)
-                if line_stripped.startswith('BEGIN'):
-                    proc_depth += 1
-                elif line_stripped.startswith('END'):
-                    proc_depth -= 1
-                    if proc_depth == 0:
-                        blocks.append({
-                            'content': '\n'.join(current_block),
-                            'start_line': block_start,
-                            'end_line': i
-                        })
-                        current_block = []
-                        in_proc = False
-            else:
-                current_block.append(line)
-        
-        if current_block:
-            blocks.append({
-                'content': '\n'.join(current_block),
-                'start_line': block_start,
-                'end_line': len(lines) - 1
-            })
-        
-        return blocks
-    
-    def _create_fragment(self, file_path, block):
-        """Create a CodeFragment from a code block."""
-        content = block['content']
         if not content.strip():
-            return None
+            return []
         
-        # Extract semantic information
-        procedures = self.patterns['procedure'].findall(content)
-        functions = self.patterns['function'].findall(content)
-        comments = self.patterns['comment'].findall(content)
-        variables = self.patterns['variable'].findall(content)
-        defines = self.patterns['define'].findall(content)
-        literals = self.patterns['literal'].findall(content)
-        
-        all_vars = variables + defines + literals
-        
-        return CodeFragment(
-            file_path=file_path,
-            start_line=block['start_line'],
-            end_line=block['end_line'],
-            content=content,
-            procedure_name=procedures[0] if procedures else None,
-            function_name=functions[0] if functions else None,
-            comments=comments,
-            variables=all_vars
-        )
-
-class SimpleTALIndexer:
-    """Simple TAL code indexer using TF-IDF only."""
+        return self._chunk_tal_content(content, file_path)
     
-    def __init__(self):
-        self.parser = TALParser()
-        self.fragments = []
+    def _chunk_tal_content(self, content, file_path):
+        """Chunk TAL content by procedures."""
+        lines = content.split('\n')
+        chunks = []
+        current_chunk = []
+        chunk_start_line = 0
+        chunk_id = 0
+        current_proc_name = ""
         
-        # Enhanced TF-IDF for code
-        self.tfidf_vectorizer = TfidfVectorizer(
-            max_features=10000,
-            stop_words='english',
-            ngram_range=(1, 4),
-            lowercase=True,
-            min_df=1,
-            max_df=0.95,
-            sublinear_tf=True
-        )
+        for line_no, line in enumerate(lines):
+            # Check for procedure start
+            proc_match = self.procedure_pattern.search(line)
+            
+            if proc_match and current_chunk:
+                # Save previous chunk
+                chunk_content = '\n'.join(current_chunk)
+                if chunk_content.strip():
+                    chunk = SimpleChunk(
+                        content=chunk_content,
+                        source_file=file_path,
+                        chunk_id=chunk_id,
+                        start_line=chunk_start_line,
+                        end_line=line_no - 1,
+                        procedure_name=current_proc_name
+                    )
+                    chunks.append(chunk)
+                    chunk_id += 1
+                
+                # Start new chunk
+                current_chunk = [line]
+                chunk_start_line = line_no
+                current_proc_name = proc_match.group(1)
+            else:
+                current_chunk.append(line)
+                
+                # If we haven't found a procedure yet and this line has one
+                if proc_match and not current_proc_name:
+                    current_proc_name = proc_match.group(1)
+                
+                # Split large chunks
+                if len(current_chunk) > 100:  # lines
+                    chunk_content = '\n'.join(current_chunk)
+                    if chunk_content.strip():
+                        chunk = SimpleChunk(
+                            content=chunk_content,
+                            source_file=file_path,
+                            chunk_id=chunk_id,
+                            start_line=chunk_start_line,
+                            end_line=line_no,
+                            procedure_name=current_proc_name
+                        )
+                        chunks.append(chunk)
+                        chunk_id += 1
+                    current_chunk = []
+                    chunk_start_line = line_no + 1
+                    current_proc_name = ""
         
-        self.code_vectorizer = TfidfVectorizer(
-            max_features=5000,
-            ngram_range=(1, 2),
-            lowercase=False,
-            token_pattern=r'\b[A-Za-z_][A-Za-z0-9_]*\b',
-            min_df=1
-        )
+        # Handle remaining content
+        if current_chunk:
+            chunk_content = '\n'.join(current_chunk)
+            if chunk_content.strip():
+                chunk = SimpleChunk(
+                    content=chunk_content,
+                    source_file=file_path,
+                    chunk_id=chunk_id,
+                    start_line=chunk_start_line,
+                    end_line=len(lines) - 1,
+                    procedure_name=current_proc_name
+                )
+                chunks.append(chunk)
         
-        self.tfidf_matrix = None
-        self.code_matrix = None
-        self.metadata = {}
+        return chunks
+
+class SimpleVectorizer:
+    """Creates TF-IDF vectors and basic topic modeling."""
+    
+    def __init__(self, max_features=3000, n_topics=10):
+        self.max_features = max_features
+        self.n_topics = n_topics
+        self.vocabulary = {}
+        self.idf_values = {}
+        self.topic_labels = []
+        self.document_count = 0
+    
+    def fit_transform(self, chunks):
+        """Create vectors and topics for chunks."""
+        print(f"Creating vectors for {len(chunks)} chunks...")
+        
+        if not chunks:
+            print("No chunks to process")
+            return
+        
+        # Extract documents
+        documents = [chunk.content for chunk in chunks]
+        doc_words = [chunk.words for chunk in chunks]
+        
+        # Build vocabulary
+        self._build_vocabulary(doc_words)
+        
+        # Create TF-IDF vectors
+        self._create_tfidf_vectors(chunks, doc_words)
+        
+        # Create simple topics
+        self._create_simple_topics(chunks, doc_words)
+        
+        print(f"✅ Created vectors with {len(self.vocabulary)} features and {self.n_topics} topics")
+    
+    def _build_vocabulary(self, doc_words):
+        """Build vocabulary from document words."""
+        # Count word frequencies across documents
+        word_doc_freq = defaultdict(int)
+        for words in doc_words:
+            unique_words = set(words)
+            for word in unique_words:
+                word_doc_freq[word] += 1
+        
+        self.document_count = len(doc_words)
+        
+        # Filter vocabulary (appear in at least 1 doc, but not more than 90%)
+        min_df = 1
+        max_df = int(0.9 * self.document_count)
+        
+        vocab_candidates = [
+            (word, freq) for word, freq in word_doc_freq.items()
+            if min_df <= freq <= max_df and len(word) >= 2
+        ]
+        
+        # Sort by frequency and take top features
+        vocab_candidates.sort(key=lambda x: x[1], reverse=True)
+        if len(vocab_candidates) > self.max_features:
+            vocab_candidates = vocab_candidates[:self.max_features]
+        
+        self.vocabulary = {word: idx for idx, (word, _) in enumerate(vocab_candidates)}
+        
+        # Calculate IDF values
+        for word, doc_freq in vocab_candidates:
+            self.idf_values[word] = math.log(self.document_count / doc_freq) if doc_freq > 0 else 0
+        
+        print(f"  Built vocabulary: {len(self.vocabulary)} words")
+    
+    def _create_tfidf_vectors(self, chunks, doc_words):
+        """Create TF-IDF vectors for chunks."""
+        for chunk, words in zip(chunks, doc_words):
+            vector = [0.0] * len(self.vocabulary)
+            word_counts = Counter(words)
+            total_words = len(words)
+            
+            if total_words > 0:
+                for word, count in word_counts.items():
+                    if word in self.vocabulary:
+                        tf = count / total_words
+                        idf = self.idf_values[word]
+                        tfidf = tf * idf
+                        vector[self.vocabulary[word]] = tfidf
+            
+            chunk.tfidf_vector = vector
+            
+            # Extract keywords (top TF-IDF terms)
+            word_scores = [(word, vector[idx]) for word, idx in self.vocabulary.items() if vector[idx] > 0]
+            word_scores.sort(key=lambda x: x[1], reverse=True)
+            chunk.keywords = [word for word, _ in word_scores[:8]]
+    
+    def _create_simple_topics(self, chunks, doc_words):
+        """Create simple topic assignments based on word co-occurrence."""
+        # For simplicity, create topics based on common word patterns
+        all_words = []
+        for words in doc_words:
+            all_words.extend(words)
+        
+        word_freq = Counter(all_words)
+        
+        # Create topic labels based on most common words
+        common_words = [word for word, _ in word_freq.most_common(50)]
+        
+        # Group words into topics
+        topic_words = []
+        for i in range(self.n_topics):
+            start_idx = i * (len(common_words) // self.n_topics)
+            end_idx = (i + 1) * (len(common_words) // self.n_topics)
+            topic_word_group = common_words[start_idx:end_idx]
+            topic_words.append(topic_word_group)
+            self.topic_labels.append(" + ".join(topic_word_group[:4]))
+        
+        # Assign topics to chunks based on word overlap
+        for chunk in chunks:
+            chunk_words_set = set(chunk.words)
+            topic_scores = []
+            
+            for topic_word_group in topic_words:
+                overlap = len(chunk_words_set & set(topic_word_group))
+                score = overlap / len(topic_word_group) if topic_word_group else 0
+                topic_scores.append(score)
+            
+            # Normalize to create distribution
+            total_score = sum(topic_scores) if sum(topic_scores) > 0 else 1
+            chunk.topic_distribution = [score / total_score for score in topic_scores]
+            
+            # Find dominant topic
+            if topic_scores:
+                max_score = max(topic_scores)
+                chunk.dominant_topic = topic_scores.index(max_score)
+                chunk.dominant_topic_prob = max_score / total_score
+            else:
+                chunk.dominant_topic = 0
+                chunk.dominant_topic_prob = 1.0 / self.n_topics
+
+class CorpusIndexer:
+    """Main corpus indexing class."""
+    
+    def __init__(self, max_features=3000, n_topics=10):
+        self.chunker = TALChunker()
+        self.vectorizer = SimpleVectorizer(max_features, n_topics)
+        self.chunks = []
+        self.stats = {
+            'total_files': 0,
+            'total_chunks': 0,
+            'total_procedures': 0,
+            'avg_chunk_size': 0,
+            'file_types': {},
+            'largest_chunk': 0,
+            'smallest_chunk': 0
+        }
     
     def index_directory(self, directory_path, file_extensions=None):
-        """Index all TAL files in a directory."""
+        """Index all files in directory."""
         if file_extensions is None:
             file_extensions = ['.tal', '.TAL', '.c', '.h']
         
-        tal_files = []
+        print(f"📁 Indexing corpus from: {directory_path}")
+        
+        # Find all matching files
+        matching_files = []
         for root, dirs, files in os.walk(directory_path):
             for file in files:
                 if any(file.endswith(ext) for ext in file_extensions):
-                    tal_files.append(os.path.join(root, file))
+                    matching_files.append(os.path.join(root, file))
         
-        if not tal_files:
-            raise Exception(f"No TAL files found in {directory_path}")
+        if not matching_files:
+            print(f"❌ No files found with extensions: {file_extensions}")
+            return []
         
-        print(f"Found {len(tal_files)} TAL files to index...")
+        print(f"📄 Found {len(matching_files)} files to process")
         
-        self.fragments = []
-        for file_path in tal_files:
-            print(f"Indexing: {file_path}")
-            file_fragments = self.parser.parse_file(file_path)
-            self.fragments.extend(file_fragments)
+        # Process each file
+        all_chunks = []
+        file_type_counts = defaultdict(int)
         
-        print(f"Extracted {len(self.fragments)} code fragments")
+        for file_path in matching_files:
+            file_ext = Path(file_path).suffix.lower()
+            file_type_counts[file_ext] += 1
+            
+            print(f"  Processing: {os.path.basename(file_path)}")
+            file_chunks = self.chunker.chunk_file(file_path)
+            all_chunks.extend(file_chunks)
+            print(f"    Created {len(file_chunks)} chunks")
         
-        # Update metadata
-        import datetime
-        self.metadata = {
-            'created_at': datetime.datetime.now().isoformat(),
-            'total_files': len(tal_files),
-            'total_fragments': len(self.fragments),
-            'file_extensions': file_extensions,
-            'model_name': 'tfidf-only'
+        self.chunks = all_chunks
+        
+        if not self.chunks:
+            print("❌ No chunks created from files")
+            return []
+        
+        print(f"\n📊 Total chunks created: {len(self.chunks)}")
+        
+        # Create vectors and topics
+        self.vectorizer.fit_transform(self.chunks)
+        
+        # Update statistics
+        chunk_sizes = [c.word_count for c in self.chunks]
+        self.stats.update({
+            'total_files': len(matching_files),
+            'total_chunks': len(self.chunks),
+            'total_procedures': len([c for c in self.chunks if c.procedure_name]),
+            'avg_chunk_size': sum(chunk_sizes) / len(chunk_sizes) if chunk_sizes else 0,
+            'file_types': dict(file_type_counts),
+            'largest_chunk': max(chunk_sizes) if chunk_sizes else 0,
+            'smallest_chunk': min(chunk_sizes) if chunk_sizes else 0
+        })
+        
+        return self.chunks
+    
+    def print_statistics(self):
+        """Print comprehensive indexing statistics."""
+        print(f"\n{'='*60}")
+        print("📊 CORPUS INDEXING STATISTICS")
+        print("="*60)
+        print(f"Files processed: {self.stats['total_files']}")
+        print(f"Chunks created: {self.stats['total_chunks']}")
+        print(f"Procedures found: {self.stats['total_procedures']}")
+        print(f"Average chunk size: {self.stats['avg_chunk_size']:.1f} words")
+        print(f"Largest chunk: {self.stats['largest_chunk']} words")
+        print(f"Smallest chunk: {self.stats['smallest_chunk']} words")
+        print(f"Vocabulary size: {len(self.vectorizer.vocabulary)}")
+        print(f"Topics created: {len(self.vectorizer.topic_labels)}")
+        
+        if self.stats['file_types']:
+            print(f"\nFile types processed:")
+            for ext, count in self.stats['file_types'].items():
+                print(f"  {ext}: {count} files")
+    
+    def print_topics(self):
+        """Print discovered topics."""
+        print(f"\n{'='*60}")
+        print("🏷️  DISCOVERED TOPICS")
+        print("="*60)
+        for i, label in enumerate(self.vectorizer.topic_labels):
+            print(f"Topic {i:2d}: {label}")
+    
+    def print_sample_chunks(self, n=3):
+        """Print sample chunks with details."""
+        print(f"\n{'='*60}")
+        print(f"📋 SAMPLE CHUNKS (showing first {n})")
+        print("="*60)
+        
+        for i, chunk in enumerate(self.chunks[:n]):
+            print(f"\nChunk {i}:")
+            print(f"  📁 File: {os.path.basename(chunk.source_file)}")
+            print(f"  📍 Lines: {chunk.start_line}-{chunk.end_line}")
+            print(f"  🔧 Procedure: {chunk.procedure_name or 'None'}")
+            print(f"  📝 Words: {chunk.word_count} characters: {chunk.char_count}")
+            print(f"  🏷️  Dominant Topic: {chunk.dominant_topic} ({chunk.dominant_topic_prob:.3f})")
+            if chunk.dominant_topic < len(self.vectorizer.topic_labels):
+                print(f"     Topic Label: {self.vectorizer.topic_labels[chunk.dominant_topic]}")
+            print(f"  🔑 Keywords: {', '.join(chunk.keywords[:6])}")
+            print(f"  📄 Content preview:")
+            
+            lines = chunk.content.split('\n')[:4]
+            for line in lines:
+                clean_line = line.strip()
+                if clean_line:
+                    print(f"     {clean_line[:65]}{'...' if len(clean_line) > 65 else ''}")
+    
+    def save_corpus(self, output_path):
+        """Save the processed corpus with metadata."""
+        print(f"\n💾 Saving corpus...")
+        
+        corpus_data = {
+            'version': '1.0',
+            'created_at': __import__('datetime').datetime.now().isoformat(),
+            'chunks': [
+                {
+                    'content': chunk.content,
+                    'source_file': chunk.source_file,
+                    'chunk_id': chunk.chunk_id,
+                    'start_line': chunk.start_line,
+                    'end_line': chunk.end_line,
+                    'procedure_name': chunk.procedure_name,
+                    'word_count': chunk.word_count,
+                    'char_count': chunk.char_count,
+                    'tfidf_vector': chunk.tfidf_vector,
+                    'topic_distribution': chunk.topic_distribution,
+                    'dominant_topic': chunk.dominant_topic,
+                    'dominant_topic_prob': chunk.dominant_topic_prob,
+                    'keywords': chunk.keywords
+                }
+                for chunk in self.chunks
+            ],
+            'vectorizer': {
+                'vocabulary': self.vectorizer.vocabulary,
+                'idf_values': self.vectorizer.idf_values,
+                'topic_labels': self.vectorizer.topic_labels,
+                'max_features': self.vectorizer.max_features,
+                'n_topics': self.vectorizer.n_topics,
+                'document_count': self.vectorizer.document_count
+            },
+            'stats': self.stats
         }
         
-        self._create_representations()
-    
-    def _create_representations(self):
-        """Create TF-IDF representations for all code fragments."""
-        if not self.fragments:
-            return
+        # Save main corpus file
+        with open(output_path, 'wb') as f:
+            pickle.dump(corpus_data, f)
         
-        print("Creating TF-IDF representations...")
-        
-        texts = []
-        code_texts = []
-        
-        for fragment in self.fragments:
-            # General text (content + comments + identifiers)
-            text_parts = [fragment.content]
-            text_parts.extend(fragment.comments)
-            if fragment.procedure_name:
-                text_parts.append(fragment.procedure_name)
-            if fragment.function_name:
-                text_parts.append(fragment.function_name)
-            text_parts.extend(fragment.variables)
-            
-            texts.append(' '.join(text_parts))
-            
-            # Code-specific (identifiers only)
-            code_parts = []
-            if fragment.procedure_name:
-                code_parts.append(fragment.procedure_name)
-            if fragment.function_name:
-                code_parts.append(fragment.function_name)
-            code_parts.extend(fragment.variables)
-            
-            # Extract identifiers from content
-            identifiers = re.findall(r'\b[A-Za-z_][A-Za-z0-9_]*\b', fragment.content)
-            code_parts.extend(identifiers)
-            
-            code_texts.append(' '.join(code_parts))
-        
-        # Create matrices
-        self.tfidf_matrix = self.tfidf_vectorizer.fit_transform(texts)
-        self.code_matrix = self.code_vectorizer.fit_transform(code_texts)
-        
-        print("Index creation complete!")
-    
-    def save_index(self, file_path):
-        """Save the index to disk."""
-        index_data = {
-            'fragments': self.fragments,
-            'tfidf_vectorizer': self.tfidf_vectorizer,
-            'tfidf_matrix': self.tfidf_matrix,
-            'code_vectorizer': self.code_vectorizer,
-            'code_matrix': self.code_matrix,
-            'metadata': self.metadata
+        # Save human-readable summary
+        summary_path = output_path.replace('.pkl', '_summary.json')
+        summary = {
+            'created_at': corpus_data['created_at'],
+            'statistics': self.stats,
+            'topics': [
+                {'id': i, 'label': label} 
+                for i, label in enumerate(self.vectorizer.topic_labels)
+            ],
+            'sample_procedures': [
+                chunk.procedure_name for chunk in self.chunks 
+                if chunk.procedure_name
+            ][:10],
+            'vocabulary_preview': list(self.vectorizer.vocabulary.keys())[:20]
         }
         
-        with open(file_path, 'wb') as f:
-            pickle.dump(index_data, f)
+        with open(summary_path, 'w', encoding='utf-8') as f:
+            json.dump(summary, f, indent=2)
         
-        # Save readable statistics
-        stats = self.get_statistics()
-        stats_file = file_path.replace('.pkl', '_stats.json')
-        with open(stats_file, 'w') as f:
-            json.dump(stats, f, indent=2)
-        
-        return stats_file
-    
-    def get_statistics(self):
-        """Get statistics about the index."""
-        if not self.fragments:
-            return {"status": "empty"}
-        
-        file_types = {}
-        procedure_count = 0
-        function_count = 0
-        
-        for fragment in self.fragments:
-            ext = Path(fragment.file_path).suffix.lower()
-            file_types[ext] = file_types.get(ext, 0) + 1
-            
-            if fragment.procedure_name:
-                procedure_count += 1
-            if fragment.function_name:
-                function_count += 1
-        
-        return {
-            "total_fragments": len(self.fragments),
-            "total_files": self.metadata.get('total_files', 0),
-            "file_types": file_types,
-            "procedures_found": procedure_count,
-            "functions_found": function_count,
-            "created_at": self.metadata.get('created_at'),
-            "model_name": self.metadata.get('model_name')
-        }
+        print(f"✅ Corpus saved to: {output_path}")
+        print(f"📋 Summary saved to: {summary_path}")
+        print(f"💾 Corpus size: {len(self.chunks)} chunks, {len(self.vectorizer.vocabulary)} vocabulary")
 
 def main():
     """Main indexer function."""
     print("="*60)
-    print("SIMPLE TAL CODE INDEXER")
+    print("📚 TAL CORPUS INDEXER")
     print("="*60)
+    print("Creates semantic index with chunks, vectors, and topics")
     
-    # Get TAL directory
+    # Get directory
     if len(sys.argv) > 1:
-        tal_directory = sys.argv[1]
+        directory = sys.argv[1]
     else:
-        tal_directory = input("Enter path to TAL source directory: ").strip()
+        directory = input("📁 Enter directory path: ").strip()
     
-    if not os.path.exists(tal_directory):
-        print(f"❌ ERROR: Directory not found: {tal_directory}")
+    if not directory or not os.path.exists(directory):
+        print(f"❌ Invalid directory: {directory}")
         return False
     
-    # Check for TAL files
-    extensions = ['.tal', '.TAL', '.c', '.h']
-    tal_files = []
-    for root, dirs, files in os.walk(tal_directory):
-        for file in files:
-            if any(file.endswith(ext) for ext in extensions):
-                tal_files.append(file)
-    
-    if not tal_files:
-        print(f"❌ ERROR: No TAL files found in directory")
-        print(f"   Looking for: {', '.join(extensions)}")
+    if not os.path.isdir(directory):
+        print(f"❌ Path is not a directory: {directory}")
         return False
     
-    print(f"📁 Found {len(tal_files)} TAL files")
+    # Get file extensions
+    print(f"\nDefault extensions: .tal, .TAL, .c, .h")
+    extensions_input = input("📄 File extensions (Enter for default): ").strip()
+    if extensions_input:
+        file_extensions = [ext.strip() for ext in extensions_input.split(',')]
+        # Ensure extensions start with dot
+        file_extensions = [ext if ext.startswith('.') else '.' + ext for ext in file_extensions]
+    else:
+        file_extensions = ['.tal', '.TAL', '.c', '.h']
+    
+    # Get processing parameters
+    try:
+        max_features = int(input("🔧 Max TF-IDF features (default 3000): ") or "3000")
+        n_topics = int(input("🏷️  Number of topics (default 10): ") or "10")
+    except ValueError:
+        print("Invalid input, using defaults")
+        max_features, n_topics = 3000, 10
+    
+    print(f"\n🚀 Starting indexing with {max_features} features and {n_topics} topics...")
+    
+    # Create indexer and process
+    indexer = CorpusIndexer(max_features, n_topics)
     
     try:
-        # Create indexer and index directory
-        indexer = SimpleTALIndexer()
-        indexer.index_directory(tal_directory)
+        chunks = indexer.index_directory(directory, file_extensions)
         
-        # Save index
-        dir_name = os.path.basename(os.path.abspath(tal_directory))
-        output_file = f"tal_index_{dir_name}.pkl"
+        if not chunks:
+            print("❌ No chunks created - check directory and file extensions")
+            return False
         
-        if len(sys.argv) > 2:
-            output_file = sys.argv[2]
+        # Show results
+        indexer.print_statistics()
+        indexer.print_topics()
+        indexer.print_sample_chunks()
         
-        stats_file = indexer.save_index(output_file)
-        stats = indexer.get_statistics()
+        # Save corpus
+        dir_name = os.path.basename(os.path.abspath(directory))
+        output_file = f"tal_corpus_{dir_name}.pkl"
         
-        # Success message
-        print(f"\n" + "="*60)
-        print("✅ INDEXING COMPLETED SUCCESSFULLY!")
-        print("="*60)
-        print(f"📁 Source directory: {tal_directory}")
-        print(f"💾 Index saved to: {output_file}")
-        print(f"📋 Statistics saved to: {stats_file}")
-        print(f"📊 Results:")
-        print(f"   - Files processed: {stats['total_files']}")
-        print(f"   - Code fragments: {stats['total_fragments']}")
-        print(f"   - Procedures found: {stats['procedures_found']}")
-        print(f"   - Functions found: {stats['functions_found']}")
-        print(f"\n🎉 Ready to use with TAL JIRA searcher!")
+        save_choice = input(f"\n💾 Save corpus to {output_file}? (y/n): ").strip().lower()
+        if save_choice in ['y', 'yes', '']:
+            indexer.save_corpus(output_file)
+            
+            print(f"\n✅ Indexing completed successfully!")
+            print(f"📁 Index file: {output_file}")
+            print(f"🔍 Use this file with the TAL searcher to query your corpus")
+        else:
+            print(f"\n✅ Indexing completed (not saved)")
         
         return True
         
     except Exception as e:
-        print(f"❌ ERROR: {e}")
+        print(f"❌ Error during indexing: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 if __name__ == "__main__":
-    success = main()
-    sys.exit(0 if success else 1)
+    try:
+        success = main()
+        if not success:
+            print(f"\n❌ Indexing failed!")
+        input("\nPress Enter to exit...")
+    except KeyboardInterrupt:
+        print(f"\n\n⚠️ Process interrupted by user")
+    except Exception as e:
+        print(f"\n❌ Unexpected error: {e}")
+        input("Press Enter to exit...")
