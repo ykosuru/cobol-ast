@@ -461,7 +461,179 @@ class EnhancedCorpusSearcher:
             
             print("   " + "-"*75)
     
-    def print_corpus_info(self):
+    def generate_llm_prompt(self, query, results, query_type="text_search", ticket=None, output_file=None):
+        """Generate and save LLM prompt for code analysis and implementation guidance."""
+        
+        timestamp = __import__('datetime').datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        if output_file is None:
+            safe_query = re.sub(r'[^\w\s-]', '', query.replace(' ', '_'))[:30]
+            output_file = f"llm_prompt_{safe_query}_{timestamp}.txt"
+        
+        prompt_lines = []
+        
+        # Header
+        prompt_lines.append("="*80)
+        prompt_lines.append("WIRE PROCESSING TAL CODE ANALYSIS - LLM PROMPT")
+        prompt_lines.append("="*80)
+        prompt_lines.append(f"Generated: {__import__('datetime').datetime.now().isoformat()}")
+        prompt_lines.append(f"Query Type: {query_type.upper()}")
+        prompt_lines.append("")
+        
+        # Query Information
+        if query_type == "jira_analysis" and ticket:
+            prompt_lines.append("JIRA TICKET REQUIREMENTS:")
+            prompt_lines.append("-" * 40)
+            prompt_lines.append(f"Ticket ID: {ticket.ticket_id}")
+            prompt_lines.append(f"Title: {ticket.title}")
+            prompt_lines.append(f"Description: {ticket.description}")
+            if ticket.acceptance_criteria:
+                prompt_lines.append("Acceptance Criteria:")
+                for i, criteria in enumerate(ticket.acceptance_criteria, 1):
+                    prompt_lines.append(f"  {i}. {criteria}")
+        else:
+            prompt_lines.append("SEARCH QUERY:")
+            prompt_lines.append("-" * 20)
+            prompt_lines.append(f"User Query: {query}")
+        
+        prompt_lines.append("")
+        
+        # Search Results Summary
+        prompt_lines.append("RELEVANT CODE SEARCH RESULTS:")
+        prompt_lines.append("-" * 40)
+        prompt_lines.append(f"Found: {len(results)} relevant code chunks")
+        
+        if results:
+            # Group results by semantic category
+            category_groups = defaultdict(list)
+            for result in results:
+                category = getattr(result.chunk, 'semantic_category', 'general')
+                category_groups[category].append(result)
+            
+            prompt_lines.append(f"Semantic Categories Found: {', '.join(category_groups.keys())}")
+            prompt_lines.append("")
+            
+            # Detailed results
+            for i, result in enumerate(results, 1):
+                chunk = result.chunk
+                prompt_lines.append(f"RESULT {i}: RELEVANCE {result.similarity_score:.3f}")
+                prompt_lines.append(f"File: {chunk.source_file}")
+                prompt_lines.append(f"Lines: {chunk.start_line}-{chunk.end_line}")
+                prompt_lines.append(f"Procedure: {chunk.procedure_name or 'None'}")
+                
+                if hasattr(chunk, 'semantic_category'):
+                    prompt_lines.append(f"Category: {chunk.semantic_category.replace('_', ' ').title()}")
+                
+                if hasattr(chunk, 'function_calls') and chunk.function_calls:
+                    prompt_lines.append(f"Key Functions: {', '.join(chunk.function_calls[:5])}")
+                
+                if hasattr(chunk, 'keywords') and chunk.keywords:
+                    prompt_lines.append(f"Keywords: {', '.join(chunk.keywords[:8])}")
+                
+                if result.keyword_matches:
+                    prompt_lines.append(f"Query Matches: {', '.join(result.keyword_matches)}")
+                
+                prompt_lines.append("Code:")
+                prompt_lines.append("-" * 20)
+                prompt_lines.append(chunk.content)
+                prompt_lines.append("-" * 20)
+                prompt_lines.append("")
+        
+        # LLM Analysis Instructions
+        prompt_lines.append("="*80)
+        prompt_lines.append("LLM ANALYSIS INSTRUCTIONS")
+        prompt_lines.append("="*80)
+        prompt_lines.append("")
+        
+        if query_type == "jira_analysis" and ticket:
+            prompt_lines.extend([
+                "You are a senior TAL/wire processing developer. Based on the JIRA ticket requirements",
+                "and the relevant existing code found above, provide a comprehensive analysis:",
+                "",
+                "1. IMPLEMENTATION STRATEGY:",
+                "   - How can the existing code be reused or modified?",
+                "   - What new procedures need to be created?",
+                "   - Which existing patterns should be followed?",
+                "",
+                "2. CODE REUSABILITY ANALYSIS:",
+                "   - Identify procedures that can be directly reused",
+                "   - Identify procedures that need modification",
+                "   - Highlight common patterns across similar implementations",
+                "",
+                "3. DEVELOPMENT APPROACH:",
+                "   - Step-by-step implementation plan",
+                "   - Integration points with existing codebase",
+                "   - Error handling and exception management strategy",
+                "",
+                "4. SPECIFIC CODE RECOMMENDATIONS:",
+                "   - Exact procedure names to reuse/modify",
+                "   - New procedure signatures needed",
+                "   - Database/file operations required",
+                "   - Validation and screening integration",
+                "",
+                "5. TESTING STRATEGY:",
+                "   - Test cases based on existing code patterns",
+                "   - Integration testing approach",
+                "   - Compliance validation testing",
+                "",
+                "6. EFFORT ESTIMATION:",
+                "   - Development time based on code complexity",
+                "   - Risk assessment and mitigation",
+                "   - Dependencies and prerequisites"
+            ])
+        else:
+            prompt_lines.extend([
+                f"You are a senior TAL/wire processing developer. The user searched for: '{query}'",
+                "Based on the relevant code found above, provide:",
+                "",
+                "1. CODE ANALYSIS:",
+                "   - What functionality is implemented in the found code?",
+                "   - How do the procedures work together?",
+                "   - What are the key integration points?",
+                "",
+                "2. USAGE GUIDANCE:",
+                "   - How would you use this code in a new implementation?",
+                "   - What parameters and inputs are required?",
+                "   - What are the expected outputs and return values?",
+                "",
+                "3. BEST PRACTICES IDENTIFIED:",
+                "   - What patterns are being followed?",
+                "   - How is error handling implemented?",
+                "   - What validation and compliance measures are in place?",
+                "",
+                "4. EXTENSION OPPORTUNITIES:",
+                "   - How could this code be extended or modified?",
+                "   - What additional functionality could be added?",
+                "   - What improvements could be made?",
+                "",
+                "5. RELATED FUNCTIONALITY:",
+                "   - What other procedures might be needed?",
+                "   - How does this fit into the larger wire processing workflow?",
+                "   - What dependencies should be considered?"
+            ])
+        
+        prompt_lines.extend([
+            "",
+            "ADDITIONAL CONTEXT:",
+            "- This is a TAL (Transaction Application Language) codebase for wire processing",
+            "- Focus on ISO 20022, SWIFT, Fedwire, CHIPS, and compliance requirements",
+            "- Consider OFAC screening, AML compliance, and regulatory reporting",
+            "- Emphasize reusability, maintainability, and compliance",
+            "",
+            "Please provide specific, actionable recommendations with code examples where appropriate."
+        ])
+        
+        # Save prompt
+        prompt_text = '\n'.join(prompt_lines)
+        
+        try:
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(prompt_text)
+            print(f"✅ LLM prompt saved to: {output_file}")
+            return output_file, prompt_text
+        except Exception as e:
+            print(f"❌ Error saving LLM prompt: {e}")
+            return None, prompt_text
         """Print enhanced corpus information."""
         print(f"\n{'='*70}")
         print("📊 ENHANCED CORPUS INFORMATION")
@@ -591,6 +763,15 @@ def main():
             
             results = searcher.enhanced_text_search(query, max_results, use_semantic)
             searcher.display_enhanced_results(results)
+            
+            # Offer LLM prompt generation
+            if results:
+                generate_prompt = input(f"\n🤖 Generate LLM prompt for analysis? (y/n): ").strip().lower()
+                if generate_prompt in ['y', 'yes']:
+                    output_file, prompt_text = searcher.generate_llm_prompt(query, results, "text_search")
+                    if output_file:
+                        print(f"📝 Copy this file to your LLM for detailed code analysis")
+                        print(f"💡 The prompt includes all relevant code and specific analysis instructions")
         
         elif choice == "2":
             # Enhanced JIRA analysis
@@ -602,6 +783,21 @@ def main():
             
             print(f"\n🎫 JIRA Analysis Results for: {ticket.ticket_id}")
             searcher.display_enhanced_results(results)
+            
+            # Offer LLM prompt generation for JIRA
+            if results:
+                generate_prompt = input(f"\n🤖 Generate LLM implementation prompt? (y/n): ").strip().lower()
+                if generate_prompt in ['y', 'yes']:
+                    output_file, prompt_text = searcher.generate_llm_prompt(
+                        ticket.title, results, "jira_analysis", ticket
+                    )
+                    if output_file:
+                        print(f"📝 JIRA implementation prompt saved!")
+                        print(f"💡 This prompt includes:")
+                        print(f"   • JIRA requirements analysis")
+                        print(f"   • Relevant existing code")
+                        print(f"   • Implementation strategy guidance") 
+                        print(f"   • Code reusability recommendations")
         
         elif choice == "3":
             # Semantic category search
@@ -621,6 +817,16 @@ def main():
             
             results = searcher.search_semantic_categories(category, max_results)
             searcher.display_enhanced_results(results)
+            
+            # Offer LLM prompt generation for category analysis
+            if results:
+                generate_prompt = input(f"\n🤖 Generate LLM prompt for category analysis? (y/n): ").strip().lower()
+                if generate_prompt in ['y', 'yes']:
+                    query = f"Semantic category: {category}"
+                    output_file, prompt_text = searcher.generate_llm_prompt(query, results, "category_analysis")
+                    if output_file:
+                        print(f"📝 Category analysis prompt saved!")
+                        print(f"💡 Use this to understand all {category} functionality")
         
         elif choice == "4":
             # Show corpus info
