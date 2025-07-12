@@ -102,19 +102,84 @@ class EnhancedTextProcessor:
             'field', 'page', 'block', 'buffer', 'error', 'status', 'code', 'flag'
         }
         self.stop_words.update(prog_stop_words)
+        
+        # Wire processing domain-specific stop words to remove
+        wire_stop_words = {
+            'system', 'process', 'processing', 'data', 'information', 'service',
+            'format', 'type', 'field', 'code', 'number', 'id', 'identifier',
+            'message', 'record', 'file', 'table', 'database', 'transaction',
+            'function', 'procedure', 'method', 'call', 'return', 'value',
+            'result', 'output', 'input', 'parameter', 'variable', 'structure'
+        }
+        self.stop_words.update(wire_stop_words)
+        
+        # High-priority payments domain keywords (NEVER filter these)
+        self.payments_domain_keywords = {
+            # Core wire processing
+            'wire', 'transfer', 'payment', 'funds', 'amount', 'currency', 'settlement',
+            'originator', 'beneficiary', 'debtor', 'creditor', 'debit', 'credit',
+            
+            # ISO 20022 messages
+            'iso20022', 'pacs', 'pain', 'camt', 'remt', 'pacs008', 'pacs009', 'pacs002',
+            'pacs004', 'pacs007', 'pain001', 'camt056', 'camt029', 'camt110', 'camt111',
+            
+            # SWIFT messages
+            'swift', 'mt103', 'mt202', 'mt202cov', 'gpi', 'uetr', 'bic', 'tracker',
+            'fin', 'cbpr', 'mystandards', 'alliance', 'score', 'cover',
+            
+            # Fedwire operations
+            'fedwire', 'imad', 'omad', 'fedline', 'advantage', 'fedpayments', 'manager',
+            'fedtransaction', 'analyzer', 'drawdown', 'participant', 'cutoff', 'typecode', 'bfc',
+            
+            # CHIPS operations
+            'chips', 'uid', 'sequence', 'prefunded', 'balance', 'netting', 'finality',
+            'clearing', 'house', 'interbank', 'realtime', 'gross', 'rtgs',
+            
+            # Compliance and screening
+            'ofac', 'sanctions', 'aml', 'kyc', 'compliance', 'screening', 'fraud',
+            'monitoring', 'suspicious', 'detection', 'regulatory', 'reporting',
+            'watchlist', 'sdn', 'blocked', 'denied',
+            
+            # Exception handling
+            'investigation', 'exception', 'repair', 'return', 'reversal', 'refund',
+            'nondelivery', 'recall', 'cancellation', 'inquiry', 'resolution', 'reject',
+            
+            # Correspondent banking
+            'correspondent', 'intermediary', 'nostro', 'vostro', 'cover', 'instructing',
+            'agent', 'ultimate', 'routing', 'chain', 'relationship',
+            
+            # Cross-border payments
+            'crossborder', 'currency', 'exchange', 'rate', 'multicurrency', 'sepa',
+            'euro', 'international', 'domestic', 'foreign',
+            
+            # Message validation
+            'validation', 'authenticate', 'verify', 'mandatory', 'optional', 'format',
+            'structured', 'address', 'lei', 'remittance', 'purpose', 'charge', 'bearer',
+            
+            # System operations
+            'queue', 'batch', 'realtime', 'stp', 'straightthrough', 'processing',
+            'automated', 'manual', 'intervention', 'priority', 'high', 'normal'
+        }
     
     def process_words(self, words):
-        """Process words to match indexer processing."""
+        """Process words with payments domain focus and stop word removal."""
         if not words:
             return [], []
         
-        # Filter stop words and short words
-        filtered_words = [
-            word for word in words 
-            if word.lower() not in self.stop_words 
-            and len(word) >= 3
-            and not word.isdigit()
-        ]
+        # Filter words with payments domain priority
+        filtered_words = []
+        for word in words:
+            word_lower = word.lower()
+            
+            # Always include payments domain keywords
+            if word_lower in self.payments_domain_keywords:
+                filtered_words.append(word)
+            # Skip stop words
+            elif word_lower in self.stop_words:
+                continue
+            # Include other meaningful words
+            elif len(word) >= 3 and not word.isdigit():
+                filtered_words.append(word)
         
         # Apply stemming
         stemmed_words = []
@@ -124,6 +189,31 @@ class EnhancedTextProcessor:
             stemmed_words = filtered_words.copy()
         
         return filtered_words, stemmed_words
+    
+    def filter_keywords_for_payments_domain(self, keywords, max_keywords=20):
+        """Filter and prioritize keywords for payments domain, limit to max_keywords."""
+        if not keywords:
+            return []
+        
+        # Separate payments domain keywords from others
+        payments_keywords = []
+        other_keywords = []
+        
+        for keyword in keywords:
+            if keyword.lower() in self.payments_domain_keywords:
+                payments_keywords.append(keyword)
+            else:
+                other_keywords.append(keyword)
+        
+        # Prioritize payments domain keywords
+        final_keywords = payments_keywords[:15]  # Take up to 15 domain keywords
+        
+        # Fill remaining slots with other relevant keywords
+        remaining_slots = max_keywords - len(final_keywords)
+        if remaining_slots > 0:
+            final_keywords.extend(other_keywords[:remaining_slots])
+        
+        return final_keywords[:max_keywords]
 
 class EnhancedCorpusSearcher:
     """Enhanced semantic search with functionality grouping."""
@@ -430,10 +520,16 @@ class EnhancedCorpusSearcher:
             
             # Enhanced keywords and matches
             if hasattr(chunk, 'keywords') and chunk.keywords:
-                print(f"   🔑 KEYWORDS: {', '.join(chunk.keywords[:8])}")
+                # Filter keywords for payments domain focus
+                filtered_keywords = self.text_processor.filter_keywords_for_payments_domain(chunk.keywords, 20)
+                if filtered_keywords:
+                    print(f"   🔑 KEYWORDS: {', '.join(filtered_keywords)}")
             
             if result.keyword_matches:
-                print(f"   🎯 MATCHES: {', '.join(result.keyword_matches[:8])}")
+                # Filter keyword matches for payments domain
+                filtered_matches = self.text_processor.filter_keywords_for_payments_domain(result.keyword_matches, 15)
+                if filtered_matches:
+                    print(f"   🎯 MATCHES: {', '.join(filtered_matches)}")
             
             # Relevance analysis
             print(f"   📝 ANALYSIS: {'; '.join(result.match_reasons)}")
@@ -461,8 +557,77 @@ class EnhancedCorpusSearcher:
             
             print("   " + "-"*75)
     
-    def generate_llm_prompt(self, query, results, query_type="text_search", ticket=None, output_file=None):
-        """Generate and save LLM prompt for code analysis and implementation guidance."""
+    def estimate_token_count(self, text):
+        """Estimate token count for text (roughly 4 characters per token)."""
+        return len(text) // 4
+    
+    def truncate_content_for_tokens(self, content, max_tokens=500):
+        """Truncate content to fit within token limit, preserving key information."""
+        estimated_tokens = self.estimate_token_count(content)
+        
+        if estimated_tokens <= max_tokens:
+            return content
+        
+        # Calculate target character count
+        target_chars = max_tokens * 4
+        
+        # Split content into lines
+        lines = content.split('\n')
+        
+        # Prioritize lines with wire processing keywords
+        priority_lines = []
+        other_lines = []
+        
+        for line in lines:
+            line_lower = line.lower()
+            if any(keyword in line_lower for keyword in ['wire', 'payment', 'pacs', 'swift', 'fedwire', 'chips', 'ofac', 'sanction', 'imad', 'omad', 'mt103', 'mt202']):
+                priority_lines.append(line)
+            else:
+                other_lines.append(line)
+        
+        # Build truncated content
+        result_lines = []
+        current_chars = 0
+        
+        # Add priority lines first
+        for line in priority_lines:
+            if current_chars + len(line) + 1 <= target_chars:
+                result_lines.append(line)
+                current_chars += len(line) + 1
+            else:
+                break
+        
+        # Add other lines if space remains
+        for line in other_lines:
+            if current_chars + len(line) + 1 <= target_chars:
+                result_lines.append(line)
+                current_chars += len(line) + 1
+            else:
+                break
+        
+        truncated_content = '\n'.join(result_lines)
+        
+        # Add truncation indicator if content was cut
+        if len(truncated_content) < len(content):
+            truncated_content += "\n... [Content truncated to fit token limit]"
+        
+        return truncated_content
+    
+    def generate_llm_prompt(self, query, results, query_type="text_search", ticket=None, output_file=None, max_results=None, target_tokens=2000):
+        """Generate and save LLM prompt with token limit control."""
+        
+        # Allow user to select number of results if not specified
+        if max_results is None and results:
+            print(f"\n📊 Found {len(results)} total results")
+            try:
+                max_results = int(input(f"How many results to include in LLM prompt? (1-{min(len(results), 10)}, default 3): ") or "3")
+                max_results = min(max_results, len(results), 10)  # Cap at 10 for token management
+            except ValueError:
+                max_results = 3
+        
+        # Limit results to selected count
+        if max_results:
+            results = results[:max_results]
         
         timestamp = __import__('datetime').datetime.now().strftime("%Y%m%d_%H%M%S")
         
@@ -472,165 +637,115 @@ class EnhancedCorpusSearcher:
         
         prompt_lines = []
         
-        # Header
-        prompt_lines.append("="*80)
-        prompt_lines.append("WIRE PROCESSING TAL CODE ANALYSIS - LLM PROMPT")
-        prompt_lines.append("="*80)
-        prompt_lines.append(f"Generated: {__import__('datetime').datetime.now().isoformat()}")
-        prompt_lines.append(f"Query Type: {query_type.upper()}")
-        prompt_lines.append("")
+        # Header (keep concise for token efficiency)
+        prompt_lines.append("="*60)
+        prompt_lines.append("WIRE PROCESSING TAL CODE ANALYSIS")
+        prompt_lines.append("="*60)
         
-        # Query Information
+        # Query Information (condensed)
         if query_type == "jira_analysis" and ticket:
-            prompt_lines.append("JIRA TICKET REQUIREMENTS:")
-            prompt_lines.append("-" * 40)
-            prompt_lines.append(f"Ticket ID: {ticket.ticket_id}")
-            prompt_lines.append(f"Title: {ticket.title}")
-            prompt_lines.append(f"Description: {ticket.description}")
+            prompt_lines.append(f"JIRA: {ticket.ticket_id} - {ticket.title}")
+            prompt_lines.append(f"DESC: {ticket.description}")
             if ticket.acceptance_criteria:
-                prompt_lines.append("Acceptance Criteria:")
-                for i, criteria in enumerate(ticket.acceptance_criteria, 1):
+                prompt_lines.append("CRITERIA:")
+                for i, criteria in enumerate(ticket.acceptance_criteria[:3], 1):  # Limit to 3 criteria
                     prompt_lines.append(f"  {i}. {criteria}")
         else:
-            prompt_lines.append("SEARCH QUERY:")
-            prompt_lines.append("-" * 20)
-            prompt_lines.append(f"User Query: {query}")
+            prompt_lines.append(f"QUERY: {query}")
         
         prompt_lines.append("")
         
-        # Search Results Summary
-        prompt_lines.append("RELEVANT CODE SEARCH RESULTS:")
-        prompt_lines.append("-" * 40)
-        prompt_lines.append(f"Found: {len(results)} relevant code chunks")
+        # Calculate token budget for code sections
+        header_text = '\n'.join(prompt_lines)
+        header_tokens = self.estimate_token_count(header_text)
+        
+        # Reserve tokens for instructions (approximately 400 tokens)
+        instruction_tokens = 400
+        available_tokens = target_tokens - header_tokens - instruction_tokens
+        tokens_per_result = available_tokens // len(results) if results else available_tokens
+        
+        # Search Results (token-optimized)
+        prompt_lines.append(f"RELEVANT CODE ({len(results)} results):")
+        prompt_lines.append("-" * 30)
         
         if results:
-            # Group results by semantic category
-            category_groups = defaultdict(list)
-            for result in results:
-                category = getattr(result.chunk, 'semantic_category', 'general')
-                category_groups[category].append(result)
-            
-            prompt_lines.append(f"Semantic Categories Found: {', '.join(category_groups.keys())}")
-            prompt_lines.append("")
-            
-            # Detailed results
             for i, result in enumerate(results, 1):
                 chunk = result.chunk
-                prompt_lines.append(f"RESULT {i}: RELEVANCE {result.similarity_score:.3f}")
-                prompt_lines.append(f"File: {chunk.source_file}")
-                prompt_lines.append(f"Lines: {chunk.start_line}-{chunk.end_line}")
-                prompt_lines.append(f"Procedure: {chunk.procedure_name or 'None'}")
+                prompt_lines.append(f"\nRESULT {i} (Score: {result.similarity_score:.2f}):")
+                prompt_lines.append(f"File: {os.path.basename(chunk.source_file)}")
+                prompt_lines.append(f"Proc: {chunk.procedure_name or 'None'}")
                 
                 if hasattr(chunk, 'semantic_category'):
                     prompt_lines.append(f"Category: {chunk.semantic_category.replace('_', ' ').title()}")
                 
+                # Include top functions and keywords (condensed)
                 if hasattr(chunk, 'function_calls') and chunk.function_calls:
-                    prompt_lines.append(f"Key Functions: {', '.join(chunk.function_calls[:5])}")
+                    top_functions = chunk.function_calls[:3]
+                    prompt_lines.append(f"Functions: {', '.join(top_functions)}")
                 
                 if hasattr(chunk, 'keywords') and chunk.keywords:
-                    prompt_lines.append(f"Keywords: {', '.join(chunk.keywords[:8])}")
+                    filtered_keywords = self.text_processor.filter_keywords_for_payments_domain(chunk.keywords, 8)
+                    if filtered_keywords:
+                        prompt_lines.append(f"Keywords: {', '.join(filtered_keywords)}")
                 
-                if result.keyword_matches:
-                    prompt_lines.append(f"Query Matches: {', '.join(result.keyword_matches)}")
-                
+                # Truncate code content to fit token budget
+                truncated_content = self.truncate_content_for_tokens(chunk.content, tokens_per_result)
                 prompt_lines.append("Code:")
+                prompt_lines.append(truncated_content)
                 prompt_lines.append("-" * 20)
-                prompt_lines.append(chunk.content)
-                prompt_lines.append("-" * 20)
-                prompt_lines.append("")
         
-        # LLM Analysis Instructions
-        prompt_lines.append("="*80)
-        prompt_lines.append("LLM ANALYSIS INSTRUCTIONS")
-        prompt_lines.append("="*80)
+        # Concise LLM Instructions (token-optimized)
         prompt_lines.append("")
+        prompt_lines.append("="*60)
+        prompt_lines.append("ANALYSIS REQUEST")
+        prompt_lines.append("="*60)
         
         if query_type == "jira_analysis" and ticket:
             prompt_lines.extend([
-                "You are a senior TAL/wire processing developer. Based on the JIRA ticket requirements",
-                "and the relevant existing code found above, provide a comprehensive analysis:",
+                "As a TAL/wire processing expert, analyze the code above and provide:",
                 "",
-                "1. IMPLEMENTATION STRATEGY:",
-                "   - How can the existing code be reused or modified?",
-                "   - What new procedures need to be created?",
-                "   - Which existing patterns should be followed?",
+                "1. REUSABILITY: Which procedures can be reused/modified for this JIRA?",
+                "2. IMPLEMENTATION: Step-by-step approach using existing patterns",
+                "3. NEW CODE: What new procedures/functions are needed?",
+                "4. INTEGRATION: How to connect with existing codebase",
+                "5. EFFORT: Development time estimate and risks",
                 "",
-                "2. CODE REUSABILITY ANALYSIS:",
-                "   - Identify procedures that can be directly reused",
-                "   - Identify procedures that need modification",
-                "   - Highlight common patterns across similar implementations",
-                "",
-                "3. DEVELOPMENT APPROACH:",
-                "   - Step-by-step implementation plan",
-                "   - Integration points with existing codebase",
-                "   - Error handling and exception management strategy",
-                "",
-                "4. SPECIFIC CODE RECOMMENDATIONS:",
-                "   - Exact procedure names to reuse/modify",
-                "   - New procedure signatures needed",
-                "   - Database/file operations required",
-                "   - Validation and screening integration",
-                "",
-                "5. TESTING STRATEGY:",
-                "   - Test cases based on existing code patterns",
-                "   - Integration testing approach",
-                "   - Compliance validation testing",
-                "",
-                "6. EFFORT ESTIMATION:",
-                "   - Development time based on code complexity",
-                "   - Risk assessment and mitigation",
-                "   - Dependencies and prerequisites"
+                "Focus on: ISO 20022, SWIFT, Fedwire, CHIPS, OFAC compliance.",
+                "Provide specific procedure names and code modifications."
             ])
         else:
             prompt_lines.extend([
-                f"You are a senior TAL/wire processing developer. The user searched for: '{query}'",
-                "Based on the relevant code found above, provide:",
+                f"As a TAL/wire processing expert, analyze the code found for: '{query}'",
                 "",
-                "1. CODE ANALYSIS:",
-                "   - What functionality is implemented in the found code?",
-                "   - How do the procedures work together?",
-                "   - What are the key integration points?",
+                "1. FUNCTIONALITY: What does this code implement?",
+                "2. USAGE: How to use these procedures in new development?",
+                "3. PATTERNS: Key wire processing patterns demonstrated",
+                "4. EXTENSIONS: How to modify/extend for new requirements",
+                "5. RELATED: What other procedures might be needed?",
                 "",
-                "2. USAGE GUIDANCE:",
-                "   - How would you use this code in a new implementation?",
-                "   - What parameters and inputs are required?",
-                "   - What are the expected outputs and return values?",
-                "",
-                "3. BEST PRACTICES IDENTIFIED:",
-                "   - What patterns are being followed?",
-                "   - How is error handling implemented?",
-                "   - What validation and compliance measures are in place?",
-                "",
-                "4. EXTENSION OPPORTUNITIES:",
-                "   - How could this code be extended or modified?",
-                "   - What additional functionality could be added?",
-                "   - What improvements could be made?",
-                "",
-                "5. RELATED FUNCTIONALITY:",
-                "   - What other procedures might be needed?",
-                "   - How does this fit into the larger wire processing workflow?",
-                "   - What dependencies should be considered?"
+                "Focus on wire processing, compliance, and reusability."
             ])
         
-        prompt_lines.extend([
-            "",
-            "ADDITIONAL CONTEXT:",
-            "- This is a TAL (Transaction Application Language) codebase for wire processing",
-            "- Focus on ISO 20022, SWIFT, Fedwire, CHIPS, and compliance requirements",
-            "- Consider OFAC screening, AML compliance, and regulatory reporting",
-            "- Emphasize reusability, maintainability, and compliance",
-            "",
-            "Please provide specific, actionable recommendations with code examples where appropriate."
-        ])
-        
-        # Save prompt
+        # Generate final prompt
         prompt_text = '\n'.join(prompt_lines)
         
+        # Verify token count
+        final_tokens = self.estimate_token_count(prompt_text)
+        
+        # Save prompt
         try:
             with open(output_file, 'w', encoding='utf-8') as f:
                 f.write(prompt_text)
+            
             print(f"✅ LLM prompt saved to: {output_file}")
+            print(f"📊 Estimated tokens: {final_tokens} (target: {target_tokens})")
+            print(f"📝 Results included: {len(results)}")
+            
+            if final_tokens > target_tokens * 1.1:  # 10% tolerance
+                print(f"⚠️  Prompt may be long for some LLMs (over {target_tokens} tokens)")
+            
             return output_file, prompt_text
+            
         except Exception as e:
             print(f"❌ Error saving LLM prompt: {e}")
             return None, prompt_text
@@ -771,7 +886,7 @@ def main():
                     output_file, prompt_text = searcher.generate_llm_prompt(query, results, "text_search")
                     if output_file:
                         print(f"📝 Copy this file to your LLM for detailed code analysis")
-                        print(f"💡 The prompt includes all relevant code and specific analysis instructions")
+                        print(f"💡 The prompt is optimized for ~2000 tokens with focused content")
         
         elif choice == "2":
             # Enhanced JIRA analysis
@@ -793,11 +908,11 @@ def main():
                     )
                     if output_file:
                         print(f"📝 JIRA implementation prompt saved!")
-                        print(f"💡 This prompt includes:")
+                        print(f"💡 Optimized prompt includes:")
                         print(f"   • JIRA requirements analysis")
-                        print(f"   • Relevant existing code")
+                        print(f"   • Selected relevant code (user-chosen count)")
                         print(f"   • Implementation strategy guidance") 
-                        print(f"   • Code reusability recommendations")
+                        print(f"   • ~2000 token limit for LLM efficiency")
         
         elif choice == "3":
             # Semantic category search
@@ -826,7 +941,7 @@ def main():
                     output_file, prompt_text = searcher.generate_llm_prompt(query, results, "category_analysis")
                     if output_file:
                         print(f"📝 Category analysis prompt saved!")
-                        print(f"💡 Use this to understand all {category} functionality")
+                        print(f"💡 Token-optimized prompt to understand all {category} functionality")
         
         elif choice == "4":
             # Show corpus info
