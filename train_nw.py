@@ -1,4 +1,760 @@
-elif category == 'error_handling':
+#!/usr/bin/env python3
+"""
+Complete Standalone AI Trainer for Indexed TAL Code
+
+Wire Processing Development Assistant - No external model downloads.
+Uses only scikit-learn and built-in libraries for AI-powered code generation.
+"""
+
+import os
+import json
+import pickle
+import random
+import re
+import sys
+from typing import List, Dict, Tuple, Any
+from dataclasses import dataclass
+from collections import Counter, defaultdict
+import math
+
+# Only use libraries that don't download external models
+try:
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.model_selection import train_test_split
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.naive_bayes import MultinomialNB
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+    from sklearn.metrics.pairwise import cosine_similarity
+    from sklearn.pipeline import Pipeline
+    import numpy as np
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
+    print("❌ Install scikit-learn: pip install scikit-learn numpy")
+
+# Add SimpleChunk class for pickle compatibility
+class SimpleChunk:
+    """Simple chunk class for pickle compatibility."""
+    def __init__(self, content="", source_file="", chunk_id=0, start_line=0, end_line=0, procedure_name=""):
+        self.content = content
+        self.source_file = source_file
+        self.chunk_id = chunk_id
+        self.start_line = start_line
+        self.end_line = end_line
+        self.procedure_name = procedure_name
+        self.raw_words = []
+        self.words = []
+        self.stemmed_words = []
+        self.word_count = 0
+        self.char_count = len(content)
+        self.function_calls = []
+        self.variable_declarations = []
+        self.control_structures = []
+        self.tfidf_vector = []
+        self.topic_distribution = []
+        self.dominant_topic = 0
+        self.dominant_topic_prob = 0.0
+        self.keywords = []
+        self.semantic_category = ""
+
+@dataclass
+class TrainingExample:
+    """Training example for various model types."""
+    input_text: str
+    target_text: str
+    metadata: Dict[str, Any]
+    task_type: str
+
+class WireProcessingFeatureExtractor:
+    """Extract features from TAL code for machine learning."""
+    
+    def __init__(self):
+        # Wire processing specific patterns
+        self.wire_keywords = {
+            'iso20022': ['iso20022', 'pacs', 'pain', 'camt', 'pacs008', 'pacs009', 'xml'],
+            'swift': ['swift', 'mt103', 'mt202', 'gpi', 'uetr', 'bic', 'fin'],
+            'fedwire': ['fedwire', 'imad', 'omad', 'federal', 'reserve', 'typecode'],
+            'chips': ['chips', 'uid', 'netting', 'clearing', 'house'],
+            'compliance': ['ofac', 'sanctions', 'aml', 'kyc', 'screening', 'compliance'],
+            'exception': ['exception', 'error', 'repair', 'investigation', 'return']
+        }
+        
+        # Technical patterns
+        self.technical_patterns = {
+            'validation': r'(?i)\b(validat|verify|check)\w*',
+            'processing': r'(?i)\b(process|handle|execute)\w*',
+            'screening': r'(?i)\b(screen|monitor|detect)\w*',
+            'transmission': r'(?i)\b(send|transmit|forward)\w*'
+        }
+    
+    def extract_features(self, chunk) -> Dict[str, Any]:
+        """Extract comprehensive features from a code chunk."""
+        features = {}
+        content_lower = chunk.content.lower()
+        
+        # Basic metrics
+        features['word_count'] = getattr(chunk, 'word_count', 0)
+        features['char_count'] = getattr(chunk, 'char_count', 0)
+        features['line_count'] = len(chunk.content.split('\n'))
+        
+        # Procedure-based features
+        features['has_procedure'] = 1 if getattr(chunk, 'procedure_name', '') else 0
+        if chunk.procedure_name:
+            proc_name = chunk.procedure_name.lower()
+            features['proc_validate'] = 1 if 'validate' in proc_name else 0
+            features['proc_process'] = 1 if 'process' in proc_name else 0
+            features['proc_screen'] = 1 if 'screen' in proc_name else 0
+            features['proc_send'] = 1 if 'send' in proc_name or 'transmit' in proc_name else 0
+        else:
+            features['proc_validate'] = 0
+            features['proc_process'] = 0
+            features['proc_screen'] = 0
+            features['proc_send'] = 0
+        
+        # Wire processing domain features
+        for domain, keywords in self.wire_keywords.items():
+            count = sum(1 for keyword in keywords if keyword in content_lower)
+            features[f'wire_{domain}_count'] = count
+            features[f'wire_{domain}_present'] = 1 if count > 0 else 0
+        
+        # Technical pattern features
+        for pattern_name, pattern in self.technical_patterns.items():
+            matches = len(re.findall(pattern, chunk.content))
+            features[f'pattern_{pattern_name}'] = matches
+        
+        # Function call features
+        function_calls = getattr(chunk, 'function_calls', [])
+        features['function_count'] = len(function_calls)
+        features['has_functions'] = 1 if function_calls else 0
+        
+        # Common wire processing function patterns
+        wire_functions = ['validate', 'process', 'send', 'receive', 'screen', 'check']
+        for func_pattern in wire_functions:
+            count = sum(1 for func in function_calls if func_pattern in func.lower())
+            features[f'func_{func_pattern}'] = count
+        
+        # Variable declaration features
+        var_declarations = getattr(chunk, 'variable_declarations', [])
+        features['variable_count'] = len(var_declarations)
+        
+        # Control structure features
+        control_structures = getattr(chunk, 'control_structures', [])
+        features['control_count'] = len(control_structures)
+        features['has_if'] = 1 if 'if' in control_structures else 0
+        features['has_while'] = 1 if 'while' in control_structures else 0
+        features['has_for'] = 1 if 'for' in control_structures else 0
+        
+        # Keyword density features
+        keywords = getattr(chunk, 'keywords', [])
+        if keywords:
+            wire_keyword_count = sum(1 for kw in keywords 
+                                   if any(wire_kw in kw.lower() 
+                                         for wire_kws in self.wire_keywords.values() 
+                                         for wire_kw in wire_kws))
+            features['wire_keyword_density'] = wire_keyword_count / len(keywords)
+        else:
+            features['wire_keyword_density'] = 0
+        
+        return features
+
+class StandaloneCorpusDataExtractor:
+    """Extract training data using only built-in libraries."""
+    
+    def __init__(self, corpus_paths):
+        # Handle both single string and list of paths
+        if isinstance(corpus_paths, str):
+            self.corpus_paths = [corpus_paths]
+        else:
+            self.corpus_paths = corpus_paths
+        
+        self.chunks = []
+        self.vectorizer_data = {}
+        self.functionality_groups = {}
+        self.feature_extractor = WireProcessingFeatureExtractor()
+        self.corpus_metadata = {}
+        self.load_multiple_corpora()
+
+    def load_multiple_corpora(self):
+        """Load multiple indexed corpora and combine them."""
+        print(f"📚 Loading {len(self.corpus_paths)} corpus files...")
+        
+        # Add SimpleChunk to global namespace for pickle compatibility
+        globals()['SimpleChunk'] = SimpleChunk
+        sys.modules[__name__].SimpleChunk = SimpleChunk
+        
+        all_chunks = []
+        combined_functionality_groups = defaultdict(list)
+        corpus_info = []
+        
+        for i, corpus_path in enumerate(self.corpus_paths):
+            print(f"   📖 Loading corpus {i+1}/{len(self.corpus_paths)}: {os.path.basename(corpus_path)}")
+            
+            try:
+                with open(corpus_path, 'rb') as f:
+                    corpus_data = pickle.load(f)
+                
+                corpus_chunks = []
+                
+                # Reconstruct chunks with error handling
+                for j, chunk_data in enumerate(corpus_data.get('chunks', [])):
+                    try:
+                        # Handle both object and dictionary formats
+                        if hasattr(chunk_data, '__dict__'):
+                            chunk = chunk_data
+                        else:
+                            chunk = type('Chunk', (), {})()
+                            for key, value in chunk_data.items():
+                                setattr(chunk, key, value)
+                        
+                        # Ensure required attributes exist
+                        if not hasattr(chunk, 'semantic_category'):
+                            chunk.semantic_category = 'general_processing'
+                        if not hasattr(chunk, 'keywords'):
+                            chunk.keywords = []
+                        if not hasattr(chunk, 'function_calls'):
+                            chunk.function_calls = []
+                        
+                        # Add corpus source information
+                        chunk.corpus_source = os.path.basename(corpus_path)
+                        chunk.corpus_index = i
+                        
+                        corpus_chunks.append(chunk)
+                        
+                    except Exception as e:
+                        print(f"⚠️  Warning: Error loading chunk {j} from {corpus_path}: {e}")
+                        continue
+                
+                all_chunks.extend(corpus_chunks)
+                
+                # Combine functionality groups
+                func_groups = corpus_data.get('functionality_groups', {})
+                for group_type, groups in func_groups.items():
+                    if isinstance(groups, dict):
+                        for group_name, group_chunks in groups.items():
+                            combined_functionality_groups[f"{group_type}_{group_name}"].extend(group_chunks)
+                
+                # Store corpus metadata
+                corpus_info.append({
+                    'path': corpus_path,
+                    'version': corpus_data.get('version', 'unknown'),
+                    'created_at': corpus_data.get('created_at', 'unknown'),
+                    'chunk_count': len(corpus_chunks),
+                    'stats': corpus_data.get('stats', {})
+                })
+                
+                # Use vectorizer data from the first corpus (they should be compatible)
+                if i == 0:
+                    self.vectorizer_data = corpus_data.get('vectorizer', {})
+                
+                print(f"      ✅ Loaded {len(corpus_chunks)} chunks")
+                
+            except Exception as e:
+                print(f"      ❌ Error loading {corpus_path}: {e}")
+                continue
+        
+        self.chunks = all_chunks
+        self.functionality_groups = dict(combined_functionality_groups)
+        self.corpus_metadata = {
+            'combined_corpora': corpus_info,
+            'total_files': len(self.corpus_paths),
+            'successful_loads': len([info for info in corpus_info if info['chunk_count'] > 0])
+        }
+        
+        print(f"✅ Combined corpus loaded:")
+        print(f"   📦 Total chunks: {len(self.chunks)}")
+        print(f"   📁 Successful corpus files: {self.corpus_metadata['successful_loads']}/{len(self.corpus_paths)}")
+        
+        # Show corpus breakdown
+        if len(corpus_info) > 1:
+            print(f"   📊 Corpus breakdown:")
+            for info in corpus_info:
+                if info['chunk_count'] > 0:
+                    print(f"      {os.path.basename(info['path'])}: {info['chunk_count']} chunks")
+    
+    def get_corpus_statistics(self):
+        """Get statistics across all loaded corpora."""
+        stats = {
+            'total_chunks': len(self.chunks),
+            'corpus_sources': {},
+            'semantic_categories': {},
+            'combined_functionality_groups': len(self.functionality_groups)
+        }
+        
+        # Count chunks by source
+        for chunk in self.chunks:
+            source = getattr(chunk, 'corpus_source', 'unknown')
+            stats['corpus_sources'][source] = stats['corpus_sources'].get(source, 0) + 1
+        
+        # Count semantic categories
+        for chunk in self.chunks:
+            category = getattr(chunk, 'semantic_category', 'unknown')
+            stats['semantic_categories'][category] = stats['semantic_categories'].get(category, 0) + 1
+        
+        return stats
+
+    def create_classification_dataset(self) -> Tuple[List[Dict], List[str], List[Dict]]:
+        """Create feature vectors and labels for classification."""
+        features_list = []
+        labels = []
+        metadata_list = []
+        
+        print("🔧 Extracting features for classification...")
+        
+        for chunk in self.chunks:
+            if hasattr(chunk, 'semantic_category') and chunk.semantic_category:
+                # Extract features
+                features = self.feature_extractor.extract_features(chunk)
+                
+                # Add text content for TF-IDF
+                features['content'] = self.clean_code_for_training(chunk.content)
+                
+                features_list.append(features)
+                labels.append(chunk.semantic_category)
+                
+                metadata_list.append({
+                    'file': chunk.source_file,
+                    'procedure': getattr(chunk, 'procedure_name', ''),
+                    'topic_prob': getattr(chunk, 'dominant_topic_prob', 0.0)
+                })
+        
+        print(f"📊 Created {len(features_list)} feature vectors")
+        return features_list, labels, metadata_list
+    
+    def create_understanding_dataset(self) -> List[Tuple[str, str]]:
+        """Create simple rule-based code explanations."""
+        examples = []
+        
+        print("🧠 Creating understanding examples...")
+        
+        for chunk in self.chunks:
+            if (hasattr(chunk, 'keywords') and chunk.keywords and 
+                hasattr(chunk, 'semantic_category')):
+                
+                code_text = self.clean_code_for_training(chunk.content)
+                explanation = self.generate_rule_based_explanation(chunk)
+                
+                examples.append((code_text, explanation))
+        
+        print(f"🧠 Created {len(examples)} understanding examples")
+        return examples
+    
+    def clean_code_for_training(self, code: str) -> str:
+        """Clean code for training."""
+        lines = code.split('\n')
+        cleaned_lines = []
+        
+        for line in lines:
+            stripped = line.strip()
+            if stripped and not stripped.startswith('!') and not stripped.startswith('//'):
+                if '!' in line:
+                    line = line[:line.index('!')].rstrip()
+                if line.strip():
+                    cleaned_lines.append(line)
+        
+        return '\n'.join(cleaned_lines).strip()
+    
+    def generate_rule_based_explanation(self, chunk) -> str:
+        """Generate explanation using rules instead of AI."""
+        explanation_parts = []
+        
+        # Category-based explanation
+        category_explanations = {
+            'iso20022_messages': 'This code processes ISO 20022 payment messages',
+            'swift_processing': 'This code handles SWIFT message processing', 
+            'fedwire_operations': 'This code manages Fedwire operations',
+            'chips_processing': 'This code handles CHIPS processing',
+            'compliance_screening': 'This code performs compliance and screening functions',
+            'investigation_exceptions': 'This code handles payment exceptions and investigations'
+        }
+        
+        if hasattr(chunk, 'semantic_category'):
+            base_explanation = category_explanations.get(
+                chunk.semantic_category,
+                f"This code implements {chunk.semantic_category.replace('_', ' ')}"
+            )
+            explanation_parts.append(base_explanation)
+        
+        # Procedure-based explanation
+        if getattr(chunk, 'procedure_name', ''):
+            proc_name = chunk.procedure_name.lower()
+            if 'validate' in proc_name:
+                explanation_parts.append("It validates input data and message formats")
+            elif 'process' in proc_name:
+                explanation_parts.append("It processes payment transactions")
+            elif 'screen' in proc_name:
+                explanation_parts.append("It screens transactions for compliance")
+            elif 'send' in proc_name or 'transmit' in proc_name:
+                explanation_parts.append("It transmits payment messages")
+        
+        # Function-based explanation
+        function_calls = getattr(chunk, 'function_calls', [])
+        if function_calls:
+            key_functions = [f for f in function_calls[:3] if len(f) > 3]
+            if key_functions:
+                explanation_parts.append(f"Key functions include: {', '.join(key_functions)}")
+        
+        return '. '.join(explanation_parts) + '.'
+
+class CodeSnippetGenerator:
+    """Generate TAL code snippets from developer questions."""
+    
+    def __init__(self, corpus_paths):
+        self.extractor = StandaloneCorpusDataExtractor(corpus_paths)
+        self.template_library = {}
+        self.pattern_library = {}
+        self.build_code_libraries()
+    
+    def build_code_libraries(self):
+        """Build libraries of code templates and patterns from corpus."""
+        print("🔧 Building code snippet libraries...")
+        
+        # Organize chunks by semantic category and patterns
+        for chunk in self.extractor.chunks:
+            category = getattr(chunk, 'semantic_category', 'general')
+            
+            # Build template library by category
+            if category not in self.template_library:
+                self.template_library[category] = []
+            
+            # Store clean, reusable code snippets
+            if (chunk.procedure_name and 
+                len(chunk.content.split('\n')) < 30 and  # Not too long
+                len(chunk.content.split('\n')) > 5):     # Not too short
+                
+                template = {
+                    'name': chunk.procedure_name,
+                    'code': self.extract_reusable_code(chunk.content),
+                    'description': self.generate_template_description(chunk),
+                    'keywords': getattr(chunk, 'keywords', []),
+                    'functions': getattr(chunk, 'function_calls', [])
+                }
+                self.template_library[category].append(template)
+        
+        # Build pattern library for common constructs
+        self.build_pattern_library()
+        
+        print(f"✅ Built {len(self.template_library)} category libraries")
+        total_templates = sum(len(templates) for templates in self.template_library.values())
+        print(f"📚 {total_templates} code templates available")
+    
+    def build_pattern_library(self):
+        """Build library of common TAL patterns."""
+        self.pattern_library = {
+            'validation': {
+                'description': 'Validate input data or message format',
+                'template': '''PROC VALIDATE_{TYPE}({param});
+BEGIN
+    ! Validate {type} format and content
+    IF NOT CHECK_{TYPE}_FORMAT({param}) THEN
+        CALL LOG_ERROR("Invalid {type} format");
+        RETURN 0;
+    END;
+    
+    ! Additional validation logic here
+    
+    RETURN 1;
+END;''',
+                'variables': ['{TYPE}', '{param}', '{type}']
+            },
+            
+            'swift_processing': {
+                'description': 'Process SWIFT message',
+                'template': '''PROC PROCESS_SWIFT_{MESSAGE_TYPE}(message_buffer);
+BEGIN
+    STRING bic_field[11];
+    STRING amount_field[15];
+    INT result := 0;
+    
+    ! Extract key fields
+    CALL EXTRACT_BIC_CODE(message_buffer, bic_field);
+    CALL EXTRACT_AMOUNT(message_buffer, amount_field);
+    
+    ! Validate message format
+    IF VALIDATE_SWIFT_FORMAT(message_buffer) THEN
+        ! Process the message
+        result := EXECUTE_SWIFT_PROCESSING(message_buffer);
+    ELSE
+        CALL LOG_SWIFT_ERROR("Invalid format", message_buffer);
+    END;
+    
+    RETURN result;
+END;''',
+                'variables': ['{MESSAGE_TYPE}']
+            },
+            
+            'fedwire_processing': {
+                'description': 'Process Fedwire transaction',
+                'template': '''PROC PROCESS_FEDWIRE_{TYPE}(wire_data);
+BEGIN
+    STRING imad[9];
+    STRING omad[9];
+    INT status := 0;
+    
+    ! Generate IMAD/OMAD
+    CALL GENERATE_IMAD(imad);
+    CALL GENERATE_OMAD(omad);
+    
+    ! Validate Fedwire format
+    IF VALIDATE_FEDWIRE_FORMAT(wire_data) THEN
+        ! Execute wire transfer
+        status := EXECUTE_FEDWIRE_TRANSFER(wire_data, imad, omad);
+    ELSE
+        CALL REJECT_FEDWIRE("Format error", wire_data);
+        status := -1;
+    END;
+    
+    RETURN status;
+END;''',
+                'variables': ['{TYPE}']
+            },
+            
+            'ofac_screening': {
+                'description': 'Screen for OFAC sanctions',
+                'template': '''PROC SCREEN_OFAC_{ENTITY}({entity}_data);
+BEGIN
+    INT match_result := 0;
+    STRING match_info[100];
+    
+    ! Screen against OFAC list
+    match_result := CHECK_OFAC_LIST({entity}_data, match_info);
+    
+    IF match_result > 0 THEN
+        ! OFAC match found - hold transaction
+        CALL HOLD_FOR_OFAC_REVIEW({entity}_data, match_info);
+        CALL LOG_OFAC_HIT({entity}_data, match_result);
+        RETURN 0;  ! Blocked
+    ELSE
+        ! No match - allow processing
+        CALL LOG_OFAC_CLEAR({entity}_data);
+        RETURN 1;  ! Approved
+    END;
+END;''',
+                'variables': ['{ENTITY}', '{entity}']
+            },
+            
+            'error_handling': {
+                'description': 'Handle errors and exceptions',
+                'template': '''PROC HANDLE_{ERROR_TYPE}_ERROR(error_code, error_data);
+BEGIN
+    STRING error_msg[200];
+    INT recovery_action := 0;
+    
+    ! Log the error
+    CALL FORMAT_ERROR_MESSAGE(error_code, error_data, error_msg);
+    CALL LOG_ERROR(error_msg);
+    
+    ! Determine recovery action
+    CASE error_code OF
+        BEGIN
+        1000 TO 1999:  ! Validation errors
+            recovery_action := REPAIR_DATA_ERROR(error_data);
+        2000 TO 2999:  ! Network errors  
+            recovery_action := RETRY_TRANSMISSION(error_data);
+        OTHERWISE:
+            recovery_action := ESCALATE_ERROR(error_code, error_data);
+        END;
+    
+    RETURN recovery_action;
+END;''',
+                'variables': ['{ERROR_TYPE}']
+            },
+            
+            'iso20022_processing': {
+                'description': 'Process ISO 20022 message',
+                'template': '''PROC PROCESS_ISO20022_{MSG_TYPE}(xml_message);
+BEGIN
+    STRING parsed_data[1000];
+    INT validation_result := 0;
+    
+    ! Parse XML message
+    validation_result := PARSE_ISO20022_XML(xml_message, parsed_data);
+    
+    IF validation_result = 1 THEN
+        ! Validate business rules
+        IF VALIDATE_ISO20022_BUSINESS_RULES(parsed_data) THEN
+            ! Process the payment
+            CALL EXECUTE_ISO20022_PAYMENT(parsed_data);
+        ELSE
+            CALL REJECT_ISO20022("Business rule violation", xml_message);
+        END;
+    ELSE
+        CALL REJECT_ISO20022("XML parsing error", xml_message);
+    END;
+END;''',
+                'variables': ['{MSG_TYPE}']
+            }
+        }
+    
+    def generate_code_snippet(self, question: str) -> Dict[str, Any]:
+        """Generate code snippet from developer question with enhanced explanations."""
+        print(f"🤖 Generating implementation for: '{question}'")
+        
+        # Analyze the question to determine intent and category
+        intent_analysis = self.analyze_question_intent(question)
+        
+        # Find best matching pattern or template
+        if intent_analysis['pattern_match']:
+            # Use pattern-based generation
+            snippet = self.generate_from_pattern(intent_analysis)
+        else:
+            # Use template-based generation from corpus
+            snippet = self.generate_from_templates(intent_analysis)
+        
+        # Add implementation guidance
+        implementation_guidance = self.generate_implementation_guidance(intent_analysis, snippet)
+        
+        return {
+            'question': question,
+            'generated_code': snippet['code'],
+            'description': snippet['description'],
+            'category': intent_analysis['category'],
+            'confidence': intent_analysis['confidence'],
+            'suggestions': snippet.get('suggestions', []),
+            'implementation_steps': implementation_guidance['steps'],
+            'integration_notes': implementation_guidance['integration'],
+            'testing_approach': implementation_guidance['testing'],
+            'related_procedures': implementation_guidance['related']
+        }
+    
+    def generate_implementation_guidance(self, intent_analysis: Dict[str, Any], snippet: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate comprehensive implementation guidance for developers."""
+        category = intent_analysis['category']
+        
+        guidance = {
+            'steps': [],
+            'integration': [],
+            'testing': [],
+            'related': []
+        }
+        
+        # Category-specific implementation steps
+        if category == 'swift_processing':
+            guidance['steps'] = [
+                "1. Set up SWIFT message parsing infrastructure",
+                "2. Implement BIC validation and lookup functions",
+                "3. Add message format validation (MT103, MT202, etc.)",
+                "4. Implement gpi UETR tracking if required",
+                "5. Add error handling for malformed messages"
+            ]
+            guidance['integration'] = [
+                "• Integrate with SWIFT Alliance Access or similar gateway",
+                "• Connect to BIC directory service for validation",
+                "• Link to your core payment processing system",
+                "• Set up message queuing for high-volume processing"
+            ]
+            guidance['testing'] = [
+                "• Test with sample SWIFT MT messages",
+                "• Validate BIC format checking",
+                "• Test error handling with malformed messages",
+                "• Performance test with message volumes"
+            ]
+            guidance['related'] = [
+                "EXTRACT_BIC_CODE", "VALIDATE_SWIFT_FORMAT", 
+                "LOG_SWIFT_ERROR", "EXECUTE_SWIFT_PROCESSING"
+            ]
+        
+        elif category == 'fedwire_operations':
+            guidance['steps'] = [
+                "1. Set up Fedwire type code processing",
+                "2. Implement IMAD/OMAD generation logic",
+                "3. Add Federal Reserve participant validation",
+                "4. Implement cutoff time checking",
+                "5. Add settlement and confirmation handling"
+            ]
+            guidance['integration'] = [
+                "• Connect to FedLine Advantage or similar Fed interface",
+                "• Integrate with your settlement accounting system",
+                "• Link to participant directory for validation",
+                "• Set up real-time status reporting"
+            ]
+            guidance['testing'] = [
+                "• Test IMAD/OMAD generation uniqueness",
+                "• Validate type code processing",
+                "• Test cutoff time handling",
+                "• Verify settlement confirmation processing"
+            ]
+            guidance['related'] = [
+                "GENERATE_IMAD", "GENERATE_OMAD", "VALIDATE_FEDWIRE_FORMAT",
+                "EXECUTE_FEDWIRE_TRANSFER"
+            ]
+        
+        elif category == 'ofac_screening':
+            guidance['steps'] = [
+                "1. Set up OFAC SDN list access and updates",
+                "2. Implement fuzzy matching algorithms",
+                "3. Add name normalization and cleansing",
+                "4. Implement scoring and threshold logic",
+                "5. Add review workflow for manual processing"
+            ]
+            guidance['integration'] = [
+                "• Connect to OFAC SDN list updates (daily/real-time)",
+                "• Integrate with case management system",
+                "• Link to transaction hold/release mechanisms",
+                "• Set up compliance reporting interfaces"
+            ]
+            guidance['testing'] = [
+                "• Test with known OFAC match scenarios",
+                "• Validate false positive handling",
+                "• Test performance with large transaction volumes",
+                "• Verify audit trail completeness"
+            ]
+            guidance['related'] = [
+                "CHECK_OFAC_LIST", "HOLD_FOR_OFAC_REVIEW",
+                "LOG_OFAC_HIT", "LOG_OFAC_CLEAR"
+            ]
+        
+        elif category == 'validation':
+            guidance['steps'] = [
+                "1. Define validation rules and business logic",
+                "2. Implement field-level format checking",
+                "3. Add cross-field validation rules",
+                "4. Implement business rule validation",
+                "5. Add comprehensive error reporting"
+            ]
+            guidance['integration'] = [
+                "• Integrate with your data dictionary/schema",
+                "• Connect to reference data services",
+                "• Link to error handling and notification systems",
+                "• Set up validation rule configuration"
+            ]
+            guidance['testing'] = [
+                "• Test each validation rule individually",
+                "• Test with valid and invalid data sets",
+                "• Verify error message clarity",
+                "• Performance test validation logic"
+            ]
+            guidance['related'] = [
+                "CHECK_FORMAT", "VALIDATE_BUSINESS_RULES",
+                "LOG_VALIDATION_ERROR", "FORMAT_ERROR_MESSAGE"
+            ]
+        
+        elif category == 'iso20022_processing':
+            guidance['steps'] = [
+                "1. Set up XML parsing and validation infrastructure",
+                "2. Implement ISO 20022 schema validation",
+                "3. Add business rule validation per message type",
+                "4. Implement message transformation logic",
+                "5. Add comprehensive error handling"
+            ]
+            guidance['integration'] = [
+                "• Connect to ISO 20022 schema repositories",
+                "• Integrate with XML processing libraries",
+                "• Link to your payment processing core",
+                "• Set up message routing and queuing"
+            ]
+            guidance['testing'] = [
+                "• Test with ISO 20022 sample messages",
+                "• Validate XML schema compliance",
+                "• Test business rule validation",
+                "• Performance test with large XML messages"
+            ]
+            guidance['related'] = [
+                "PARSE_ISO20022_XML", "VALIDATE_ISO20022_BUSINESS_RULES",
+                "EXECUTE_ISO20022_PAYMENT", "REJECT_ISO20022"
+            ]
+        
+        elif category == 'error_handling':
             guidance['steps'] = [
                 "1. Define error codes and categories",
                 "2. Implement error logging and tracking",
@@ -522,7 +1278,6 @@ class StandaloneWireProcessingTrainer:
         test_vector = vectorizer.transform([test_code])
         
         # Find most similar code
-        from sklearn.metrics.pairwise import cosine_similarity
         similarities = cosine_similarity(test_vector, code_vectors)[0]
         best_match_idx = np.argmax(similarities)
         
@@ -634,7 +1389,7 @@ def show_example_questions():
         print(f"   {i}. {example}")
 
 def main():
-    """Main function for standalone training and Q&A assistance."""
+    """Main function for wire processing AI assistant."""
     print("🤖 WIRE PROCESSING AI ASSISTANT")
     print("="*60)
     print("Powered by your indexed TAL codebase - No external downloads needed!")
@@ -762,833 +1517,150 @@ def main():
                         if follow_up in ['y', 'yes']:
                             related_question = input("What specifically do you need help with? ").strip()
                             if related_question:
-                                print(f"\n🔄 Generating related implementation...")
-                                question = related_question
-                                continue
+                                # Generate related code
+                                related_result = generator.generate_code_snippet(related_question)
+                                print(f"\n🔗 Related Implementation:")
+                                print("-" * 30)
+                                print(related_result['generated_code'])
+                                print("-" * 30)
                         
                     except Exception as e:
-                        print(f"❌ Error generating implementation: {e}")
-                        print("💡 Try rephrasing your question or being more specific")
-                else:
-                    print("❌ Please ask a specific implementation question")
-                    print("💡 Example: 'How do I validate SWIFT MT103 messages?'")
+                        print(f"❌ Error generating code: {e}")
+                        print("Please try rephrasing your question or check the corpus files.")
         
         elif choice == "2":
-            model = trainer.train_classification_model()
-            if model:
-                print("\n🧪 Testing with sample code...")
-                test_code = """
-PROC VALIDATE_SWIFT_MT103(message);
-BEGIN
-    CALL EXTRACT_BIC_CODE(message, bic_field);
-    IF NOT VALIDATE_BIC_FORMAT(bic_field) THEN
-        RETURN 0;
-    END;
-END;
-"""
-                trainer.test_classification_model(test_code)
+            print("\n🏗️ Training Classification Model...")
+            try:
+                model = trainer.train_classification_model()
+                if model:
+                    print(f"✅ Classification model trained successfully!")
+                    print(f"📊 Model type: {model['model_type']}")
+                    print(f"🎯 Accuracy: {model['accuracy']:.3f}")
+            except Exception as e:
+                print(f"❌ Error training classification model: {e}")
         
         elif choice == "3":
-            model = trainer.train_understanding_model()
-            if model:
-                print("\n🧪 Testing understanding...")
-                test_code = """
-PROC VALIDATE_SWIFT_MT103(message);
-BEGIN
-    CALL EXTRACT_BIC_CODE(message, bic_field);
-END;
-"""
-                trainer.test_understanding_model(test_code)
+            print("\n🧠 Training Understanding Model...")
+            try:
+                model = trainer.train_understanding_model()
+                if model:
+                    print(f"✅ Understanding model trained successfully!")
+                    print(f"📊 Examples indexed: {len(model['examples'])}")
+            except Exception as e:
+                print(f"❌ Error training understanding model: {e}")
         
         elif choice == "4":
-            print("🚀 Training both models...")
-            trainer.train_classification_model()
-            trainer.train_understanding_model()
-            print("✅ Both models trained!")
+            print("\n🚀 Training Both Models...")
+            try:
+                print("Step 1/2: Training classification model...")
+                classification_model = trainer.train_classification_model()
+                
+                print("\nStep 2/2: Training understanding model...")
+                understanding_model = trainer.train_understanding_model()
+                
+                if classification_model and understanding_model:
+                    print("\n✅ Both models trained successfully!")
+                    print(f"🎯 Classification accuracy: {classification_model['accuracy']:.3f}")
+                    print(f"📊 Understanding examples: {len(understanding_model['examples'])}")
+                else:
+                    print("⚠️ Some models failed to train. Check error messages above.")
+            except Exception as e:
+                print(f"❌ Error training models: {e}")
         
         elif choice == "5":
-            print("🧪 Testing existing models...")
-            test_code = input("Enter TAL code to test: ").strip()
-            if test_code:
-                print("\n🏷️ Classification test:")
-                trainer.test_classification_model(test_code)
-                print("\n🧠 Understanding test:")
-                trainer.test_understanding_model(test_code)
+            print("\n🧪 TEST TRAINED MODELS")
+            print("="*30)
+            
+            # Get test code from user
+            print("Enter TAL code to test (end with empty line):")
+            test_lines = []
+            while True:
+                line = input()
+                if not line.strip():
+                    break
+                test_lines.append(line)
+            
+            if test_lines:
+                test_code = '\n'.join(test_lines)
+                
+                print(f"\n🔍 Testing with code:")
+                print("-" * 30)
+                print(test_code)
+                print("-" * 30)
+                
+                # Test classification model
+                print(f"\n🎯 Classification Model Results:")
+                try:
+                    prediction = trainer.test_classification_model(test_code)
+                except Exception as e:
+                    print(f"❌ Classification test failed: {e}")
+                
+                # Test understanding model
+                print(f"\n🧠 Understanding Model Results:")
+                try:
+                    explanation = trainer.test_understanding_model(test_code)
+                except Exception as e:
+                    print(f"❌ Understanding test failed: {e}")
+            else:
+                print("❌ No test code provided")
         
         elif choice == "6":
-            # Show detailed statistics
-            trainer.show_corpus_overview()
-            print("📊 Detailed corpus statistics displayed above")
+            print("\n📊 DETAILED CORPUS STATISTICS")
+            print("="*40)
+            
+            stats = trainer.extractor.get_corpus_statistics()
+            
+            # Show detailed breakdown
+            print(f"\n📁 Corpus Files Loaded:")
+            for corpus_info in trainer.extractor.corpus_metadata['combined_corpora']:
+                print(f"   📄 {os.path.basename(corpus_info['path'])}")
+                print(f"      Version: {corpus_info['version']}")
+                print(f"      Created: {corpus_info['created_at']}")
+                print(f"      Chunks: {corpus_info['chunk_count']}")
+                if corpus_info['stats']:
+                    print(f"      Original stats: {corpus_info['stats']}")
+                print()
+            
+            # Show functionality groups
+            if trainer.extractor.functionality_groups:
+                print(f"🔗 Functionality Groups:")
+                for group_name, group_chunks in list(trainer.extractor.functionality_groups.items())[:10]:
+                    print(f"   {group_name}: {len(group_chunks)} chunks")
+            
+            # Show sample procedures
+            procedures = [chunk.procedure_name for chunk in trainer.extractor.chunks 
+                         if hasattr(chunk, 'procedure_name') and chunk.procedure_name]
+            if procedures:
+                print(f"\n🔧 Sample Procedures ({len(procedures)} total):")
+                for proc in procedures[:15]:
+                    print(f"   • {proc}")
+                if len(procedures) > 15:
+                    print(f"   ... and {len(procedures) - 15} more")
+            
+            # Show keyword analysis
+            all_keywords = []
+            for chunk in trainer.extractor.chunks:
+                if hasattr(chunk, 'keywords') and chunk.keywords:
+                    all_keywords.extend(chunk.keywords)
+            
+            if all_keywords:
+                keyword_counts = Counter(all_keywords)
+                print(f"\n🏷️ Top Keywords:")
+                for keyword, count in keyword_counts.most_common(20):
+                    print(f"   {keyword}: {count}")
         
         elif choice == "7":
-            print("👋 Goodbye! Hope the assistant was helpful!")
+            print("\n👋 Goodbye! Thanks for using the Wire Processing AI Assistant!")
             break
         
         else:
             print("❌ Invalid choice. Please select 1-7.")
 
 if __name__ == "__main__":
-    import sys
-    main()#!/usr/bin/env python3
-"""
-Standalone AI Model Trainer for Indexed TAL Code
-
-No external model downloads - uses only scikit-learn and built-in libraries.
-Trains lightweight but effective models for wire processing code analysis.
-"""
-
-import os
-import json
-import pickle
-import random
-import re
-from typing import List, Dict, Tuple, Any
-from dataclasses import dataclass
-from collections import Counter, defaultdict
-import math
-
-# Only use libraries that don't download external models
-try:
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.model_selection import train_test_split
-    from sklearn.ensemble import RandomForestClassifier
-    from sklearn.naive_bayes import MultinomialNB
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
-    from sklearn.pipeline import Pipeline
-    import numpy as np
-    SKLEARN_AVAILABLE = True
-except ImportError:
-    SKLEARN_AVAILABLE = False
-    print("❌ Install scikit-learn: pip install scikit-learn numpy")
-
-# Add SimpleChunk class for pickle compatibility
-class SimpleChunk:
-    """Simple chunk class for pickle compatibility."""
-    def __init__(self, content="", source_file="", chunk_id=0, start_line=0, end_line=0, procedure_name=""):
-        self.content = content
-        self.source_file = source_file
-        self.chunk_id = chunk_id
-        self.start_line = start_line
-        self.end_line = end_line
-        self.procedure_name = procedure_name
-        self.raw_words = []
-        self.words = []
-        self.stemmed_words = []
-        self.word_count = 0
-        self.char_count = len(content)
-        self.function_calls = []
-        self.variable_declarations = []
-        self.control_structures = []
-        self.tfidf_vector = []
-        self.topic_distribution = []
-        self.dominant_topic = 0
-        self.dominant_topic_prob = 0.0
-        self.keywords = []
-        self.semantic_category = ""
-
-@dataclass
-class TrainingExample:
-    """Training example for various model types."""
-    input_text: str
-    target_text: str
-    metadata: Dict[str, Any]
-    task_type: str
-
-class WireProcessingFeatureExtractor:
-    """Extract features from TAL code for machine learning."""
-    
-    def __init__(self):
-        # Wire processing specific patterns
-        self.wire_keywords = {
-            'iso20022': ['iso20022', 'pacs', 'pain', 'camt', 'pacs008', 'pacs009', 'xml'],
-            'swift': ['swift', 'mt103', 'mt202', 'gpi', 'uetr', 'bic', 'fin'],
-            'fedwire': ['fedwire', 'imad', 'omad', 'federal', 'reserve', 'typecode'],
-            'chips': ['chips', 'uid', 'netting', 'clearing', 'house'],
-            'compliance': ['ofac', 'sanctions', 'aml', 'kyc', 'screening', 'compliance'],
-            'exception': ['exception', 'error', 'repair', 'investigation', 'return']
-        }
-        
-        # Technical patterns
-        self.technical_patterns = {
-            'validation': r'(?i)\b(validat|verify|check)\w*',
-            'processing': r'(?i)\b(process|handle|execute)\w*',
-            'screening': r'(?i)\b(screen|monitor|detect)\w*',
-            'transmission': r'(?i)\b(send|transmit|forward)\w*'
-        }
-    
-    def extract_features(self, chunk) -> Dict[str, Any]:
-        """Extract comprehensive features from a code chunk."""
-        features = {}
-        content_lower = chunk.content.lower()
-        
-        # Basic metrics
-        features['word_count'] = getattr(chunk, 'word_count', 0)
-        features['char_count'] = getattr(chunk, 'char_count', 0)
-        features['line_count'] = len(chunk.content.split('\n'))
-        
-        # Procedure-based features
-        features['has_procedure'] = 1 if getattr(chunk, 'procedure_name', '') else 0
-        if chunk.procedure_name:
-            proc_name = chunk.procedure_name.lower()
-            features['proc_validate'] = 1 if 'validate' in proc_name else 0
-            features['proc_process'] = 1 if 'process' in proc_name else 0
-            features['proc_screen'] = 1 if 'screen' in proc_name else 0
-            features['proc_send'] = 1 if 'send' in proc_name or 'transmit' in proc_name else 0
-        else:
-            features['proc_validate'] = 0
-            features['proc_process'] = 0
-            features['proc_screen'] = 0
-            features['proc_send'] = 0
-        
-        # Wire processing domain features
-        for domain, keywords in self.wire_keywords.items():
-            count = sum(1 for keyword in keywords if keyword in content_lower)
-            features[f'wire_{domain}_count'] = count
-            features[f'wire_{domain}_present'] = 1 if count > 0 else 0
-        
-        # Technical pattern features
-        for pattern_name, pattern in self.technical_patterns.items():
-            matches = len(re.findall(pattern, chunk.content))
-            features[f'pattern_{pattern_name}'] = matches
-        
-        # Function call features
-        function_calls = getattr(chunk, 'function_calls', [])
-        features['function_count'] = len(function_calls)
-        features['has_functions'] = 1 if function_calls else 0
-        
-        # Common wire processing function patterns
-        wire_functions = ['validate', 'process', 'send', 'receive', 'screen', 'check']
-        for func_pattern in wire_functions:
-            count = sum(1 for func in function_calls if func_pattern in func.lower())
-            features[f'func_{func_pattern}'] = count
-        
-        # Variable declaration features
-        var_declarations = getattr(chunk, 'variable_declarations', [])
-        features['variable_count'] = len(var_declarations)
-        
-        # Control structure features
-        control_structures = getattr(chunk, 'control_structures', [])
-        features['control_count'] = len(control_structures)
-        features['has_if'] = 1 if 'if' in control_structures else 0
-        features['has_while'] = 1 if 'while' in control_structures else 0
-        features['has_for'] = 1 if 'for' in control_structures else 0
-        
-        # Keyword density features
-        keywords = getattr(chunk, 'keywords', [])
-        if keywords:
-            wire_keyword_count = sum(1 for kw in keywords 
-                                   if any(wire_kw in kw.lower() 
-                                         for wire_kws in self.wire_keywords.values() 
-                                         for wire_kw in wire_kws))
-            features['wire_keyword_density'] = wire_keyword_count / len(keywords)
-        else:
-            features['wire_keyword_density'] = 0
-        
-        return features
-
-class StandaloneCorpusDataExtractor:
-    """Extract training data using only built-in libraries."""
-    
-    def __init__(self, corpus_paths):
-        # Handle both single string and list of paths
-        if isinstance(corpus_paths, str):
-            self.corpus_paths = [corpus_paths]
-        else:
-            self.corpus_paths = corpus_paths
-        
-        self.chunks = []
-        self.vectorizer_data = {}
-        self.functionality_groups = {}
-        self.feature_extractor = WireProcessingFeatureExtractor()
-        self.corpus_metadata = {}
-        self.load_multiple_corpora()
-
-    def load_multiple_corpora(self):
-        """Load multiple indexed corpora and combine them."""
-        print(f"📚 Loading {len(self.corpus_paths)} corpus files...")
-        
-        # Add SimpleChunk to global namespace for pickle compatibility
-        import sys
-        globals()['SimpleChunk'] = SimpleChunk
-        sys.modules[__name__].SimpleChunk = SimpleChunk
-        
-        all_chunks = []
-        combined_functionality_groups = defaultdict(list)
-        corpus_info = []
-        
-        for i, corpus_path in enumerate(self.corpus_paths):
-            print(f"   📖 Loading corpus {i+1}/{len(self.corpus_paths)}: {os.path.basename(corpus_path)}")
-            
-            try:
-                with open(corpus_path, 'rb') as f:
-                    corpus_data = pickle.load(f)
-                
-                corpus_chunks = []
-                
-                # Reconstruct chunks with error handling
-                for j, chunk_data in enumerate(corpus_data.get('chunks', [])):
-                    try:
-                        # Handle both object and dictionary formats
-                        if hasattr(chunk_data, '__dict__'):
-                            chunk = chunk_data
-                        else:
-                            chunk = type('Chunk', (), {})()
-                            for key, value in chunk_data.items():
-                                setattr(chunk, key, value)
-                        
-                        # Ensure required attributes exist
-                        if not hasattr(chunk, 'semantic_category'):
-                            chunk.semantic_category = 'general_processing'
-                        if not hasattr(chunk, 'keywords'):
-                            chunk.keywords = []
-                        if not hasattr(chunk, 'function_calls'):
-                            chunk.function_calls = []
-                        
-                        # Add corpus source information
-                        chunk.corpus_source = os.path.basename(corpus_path)
-                        chunk.corpus_index = i
-                        
-                        corpus_chunks.append(chunk)
-                        
-                    except Exception as e:
-                        print(f"⚠️  Warning: Error loading chunk {j} from {corpus_path}: {e}")
-                        continue
-                
-                all_chunks.extend(corpus_chunks)
-                
-                # Combine functionality groups
-                func_groups = corpus_data.get('functionality_groups', {})
-                for group_type, groups in func_groups.items():
-                    if isinstance(groups, dict):
-                        for group_name, group_chunks in groups.items():
-                            combined_functionality_groups[f"{group_type}_{group_name}"].extend(group_chunks)
-                
-                # Store corpus metadata
-                corpus_info.append({
-                    'path': corpus_path,
-                    'version': corpus_data.get('version', 'unknown'),
-                    'created_at': corpus_data.get('created_at', 'unknown'),
-                    'chunk_count': len(corpus_chunks),
-                    'stats': corpus_data.get('stats', {})
-                })
-                
-                # Use vectorizer data from the first corpus (they should be compatible)
-                if i == 0:
-                    self.vectorizer_data = corpus_data.get('vectorizer', {})
-                
-                print(f"      ✅ Loaded {len(corpus_chunks)} chunks")
-                
-            except Exception as e:
-                print(f"      ❌ Error loading {corpus_path}: {e}")
-                continue
-        
-        self.chunks = all_chunks
-        self.functionality_groups = dict(combined_functionality_groups)
-        self.corpus_metadata = {
-            'combined_corpora': corpus_info,
-            'total_files': len(self.corpus_paths),
-            'successful_loads': len([info for info in corpus_info if info['chunk_count'] > 0])
-        }
-        
-        print(f"✅ Combined corpus loaded:")
-        print(f"   📦 Total chunks: {len(self.chunks)}")
-        print(f"   📁 Successful corpus files: {self.corpus_metadata['successful_loads']}/{len(self.corpus_paths)}")
-        
-        # Show corpus breakdown
-        if len(corpus_info) > 1:
-            print(f"   📊 Corpus breakdown:")
-            for info in corpus_info:
-                if info['chunk_count'] > 0:
-                    print(f"      {os.path.basename(info['path'])}: {info['chunk_count']} chunks")
-    
-    def get_corpus_statistics(self):
-        """Get statistics across all loaded corpora."""
-        stats = {
-            'total_chunks': len(self.chunks),
-            'corpus_sources': {},
-            'semantic_categories': {},
-            'combined_functionality_groups': len(self.functionality_groups)
-        }
-        
-        # Count chunks by source
-        for chunk in self.chunks:
-            source = getattr(chunk, 'corpus_source', 'unknown')
-            stats['corpus_sources'][source] = stats['corpus_sources'].get(source, 0) + 1
-        
-        # Count semantic categories
-        for chunk in self.chunks:
-            category = getattr(chunk, 'semantic_category', 'unknown')
-            stats['semantic_categories'][category] = stats['semantic_categories'].get(category, 0) + 1
-        
-        return stats
-
-    def create_classification_dataset(self) -> Tuple[List[Dict], List[str], List[Dict]]:
-        """Create feature vectors and labels for classification."""
-        features_list = []
-        labels = []
-        metadata_list = []
-        
-        print("🔧 Extracting features for classification...")
-        
-        for chunk in self.chunks:
-            if hasattr(chunk, 'semantic_category') and chunk.semantic_category:
-                # Extract features
-                features = self.feature_extractor.extract_features(chunk)
-                
-                # Add text content for TF-IDF
-                features['content'] = self.clean_code_for_training(chunk.content)
-                
-                features_list.append(features)
-                labels.append(chunk.semantic_category)
-                
-                metadata_list.append({
-                    'file': chunk.source_file,
-                    'procedure': getattr(chunk, 'procedure_name', ''),
-                    'topic_prob': getattr(chunk, 'dominant_topic_prob', 0.0)
-                })
-        
-        print(f"📊 Created {len(features_list)} feature vectors")
-        return features_list, labels, metadata_list
-    
-    def create_understanding_dataset(self) -> List[Tuple[str, str]]:
-        """Create simple rule-based code explanations."""
-        examples = []
-        
-        print("🧠 Creating understanding examples...")
-        
-        for chunk in self.chunks:
-            if (hasattr(chunk, 'keywords') and chunk.keywords and 
-                hasattr(chunk, 'semantic_category')):
-                
-                code_text = self.clean_code_for_training(chunk.content)
-                explanation = self.generate_rule_based_explanation(chunk)
-                
-                examples.append((code_text, explanation))
-        
-        print(f"🧠 Created {len(examples)} understanding examples")
-        return examples
-    
-    def clean_code_for_training(self, code: str) -> str:
-        """Clean code for training."""
-        lines = code.split('\n')
-        cleaned_lines = []
-        
-        for line in lines:
-            stripped = line.strip()
-            if stripped and not stripped.startswith('!') and not stripped.startswith('//'):
-                if '!' in line:
-                    line = line[:line.index('!')].rstrip()
-                if line.strip():
-                    cleaned_lines.append(line)
-        
-        return '\n'.join(cleaned_lines).strip()
-    
-    def generate_rule_based_explanation(self, chunk) -> str:
-        """Generate explanation using rules instead of AI."""
-        explanation_parts = []
-        
-        # Category-based explanation
-        category_explanations = {
-            'iso20022_messages': 'This code processes ISO 20022 payment messages',
-            'swift_processing': 'This code handles SWIFT message processing', 
-            'fedwire_operations': 'This code manages Fedwire operations',
-            'chips_processing': 'This code handles CHIPS processing',
-            'compliance_screening': 'This code performs compliance and screening functions',
-            'investigation_exceptions': 'This code handles payment exceptions and investigations'
-        }
-        
-        if hasattr(chunk, 'semantic_category'):
-            base_explanation = category_explanations.get(
-                chunk.semantic_category,
-                f"This code implements {chunk.semantic_category.replace('_', ' ')}"
-            )
-            explanation_parts.append(base_explanation)
-        
-        # Procedure-based explanation
-        if getattr(chunk, 'procedure_name', ''):
-            proc_name = chunk.procedure_name.lower()
-            if 'validate' in proc_name:
-                explanation_parts.append("It validates input data and message formats")
-            elif 'process' in proc_name:
-                explanation_parts.append("It processes payment transactions")
-            elif 'screen' in proc_name:
-                explanation_parts.append("It screens transactions for compliance")
-            elif 'send' in proc_name or 'transmit' in proc_name:
-                explanation_parts.append("It transmits payment messages")
-        
-        # Function-based explanation
-        function_calls = getattr(chunk, 'function_calls', [])
-        if function_calls:
-            key_functions = [f for f in function_calls[:3] if len(f) > 3]
-            if key_functions:
-                explanation_parts.append(f"Key functions include: {', '.join(key_functions)}")
-        
-        return '. '.join(explanation_parts) + '.'
-
-class CodeSnippetGenerator:
-    """Generate TAL code snippets from developer questions."""
-    
-    def __init__(self, corpus_paths):
-        self.extractor = StandaloneCorpusDataExtractor(corpus_paths)
-        self.template_library = {}
-        self.pattern_library = {}
-        self.build_code_libraries()
-    
-    def build_code_libraries(self):
-        """Build libraries of code templates and patterns from corpus."""
-        print("🔧 Building code snippet libraries...")
-        
-        # Organize chunks by semantic category and patterns
-        for chunk in self.extractor.chunks:
-            category = getattr(chunk, 'semantic_category', 'general')
-            
-            # Build template library by category
-            if category not in self.template_library:
-                self.template_library[category] = []
-            
-            # Store clean, reusable code snippets
-            if (chunk.procedure_name and 
-                len(chunk.content.split('\n')) < 30 and  # Not too long
-                len(chunk.content.split('\n')) > 5):     # Not too short
-                
-                template = {
-                    'name': chunk.procedure_name,
-                    'code': self.extract_reusable_code(chunk.content),
-                    'description': self.generate_template_description(chunk),
-                    'keywords': getattr(chunk, 'keywords', []),
-                    'functions': getattr(chunk, 'function_calls', [])
-                }
-                self.template_library[category].append(template)
-        
-        # Build pattern library for common constructs
-        self.build_pattern_library()
-        
-        print(f"✅ Built {len(self.template_library)} category libraries")
-        total_templates = sum(len(templates) for templates in self.template_library.values())
-        print(f"📚 {total_templates} code templates available")
-    
-    def build_pattern_library(self):
-        """Build library of common TAL patterns."""
-        self.pattern_library = {
-            'validation': {
-                'description': 'Validate input data or message format',
-                'template': '''PROC VALIDATE_{TYPE}({param});
-BEGIN
-    ! Validate {type} format and content
-    IF NOT CHECK_{TYPE}_FORMAT({param}) THEN
-        CALL LOG_ERROR("Invalid {type} format");
-        RETURN 0;
-    END;
-    
-    ! Additional validation logic here
-    
-    RETURN 1;
-END;''',
-                'variables': ['{TYPE}', '{param}', '{type}']
-            },
-            
-            'swift_processing': {
-                'description': 'Process SWIFT message',
-                'template': '''PROC PROCESS_SWIFT_{MESSAGE_TYPE}(message_buffer);
-BEGIN
-    STRING bic_field[11];
-    STRING amount_field[15];
-    INT result := 0;
-    
-    ! Extract key fields
-    CALL EXTRACT_BIC_CODE(message_buffer, bic_field);
-    CALL EXTRACT_AMOUNT(message_buffer, amount_field);
-    
-    ! Validate message format
-    IF VALIDATE_SWIFT_FORMAT(message_buffer) THEN
-        ! Process the message
-        result := EXECUTE_SWIFT_PROCESSING(message_buffer);
-    ELSE
-        CALL LOG_SWIFT_ERROR("Invalid format", message_buffer);
-    END;
-    
-    RETURN result;
-END;''',
-                'variables': ['{MESSAGE_TYPE}']
-            },
-            
-            'fedwire_processing': {
-                'description': 'Process Fedwire transaction',
-                'template': '''PROC PROCESS_FEDWIRE_{TYPE}(wire_data);
-BEGIN
-    STRING imad[9];
-    STRING omad[9];
-    INT status := 0;
-    
-    ! Generate IMAD/OMAD
-    CALL GENERATE_IMAD(imad);
-    CALL GENERATE_OMAD(omad);
-    
-    ! Validate Fedwire format
-    IF VALIDATE_FEDWIRE_FORMAT(wire_data) THEN
-        ! Execute wire transfer
-        status := EXECUTE_FEDWIRE_TRANSFER(wire_data, imad, omad);
-    ELSE
-        CALL REJECT_FEDWIRE("Format error", wire_data);
-        status := -1;
-    END;
-    
-    RETURN status;
-END;''',
-                'variables': ['{TYPE}']
-            },
-            
-            'ofac_screening': {
-                'description': 'Screen for OFAC sanctions',
-                'template': '''PROC SCREEN_OFAC_{ENTITY}({entity}_data);
-BEGIN
-    INT match_result := 0;
-    STRING match_info[100];
-    
-    ! Screen against OFAC list
-    match_result := CHECK_OFAC_LIST({entity}_data, match_info);
-    
-    IF match_result > 0 THEN
-        ! OFAC match found - hold transaction
-        CALL HOLD_FOR_OFAC_REVIEW({entity}_data, match_info);
-        CALL LOG_OFAC_HIT({entity}_data, match_result);
-        RETURN 0;  ! Blocked
-    ELSE
-        ! No match - allow processing
-        CALL LOG_OFAC_CLEAR({entity}_data);
-        RETURN 1;  ! Approved
-    END;
-END;''',
-                'variables': ['{ENTITY}', '{entity}']
-            },
-            
-            'error_handling': {
-                'description': 'Handle errors and exceptions',
-                'template': '''PROC HANDLE_{ERROR_TYPE}_ERROR(error_code, error_data);
-BEGIN
-    STRING error_msg[200];
-    INT recovery_action := 0;
-    
-    ! Log the error
-    CALL FORMAT_ERROR_MESSAGE(error_code, error_data, error_msg);
-    CALL LOG_ERROR(error_msg);
-    
-    ! Determine recovery action
-    CASE error_code OF
-        BEGIN
-        1000 TO 1999:  ! Validation errors
-            recovery_action := REPAIR_DATA_ERROR(error_data);
-        2000 TO 2999:  ! Network errors  
-            recovery_action := RETRY_TRANSMISSION(error_data);
-        OTHERWISE:
-            recovery_action := ESCALATE_ERROR(error_code, error_data);
-        END;
-    
-    RETURN recovery_action;
-END;''',
-                'variables': ['{ERROR_TYPE}']
-            },
-            
-            'iso20022_processing': {
-                'description': 'Process ISO 20022 message',
-                'template': '''PROC PROCESS_ISO20022_{MSG_TYPE}(xml_message);
-BEGIN
-    STRING parsed_data[1000];
-    INT validation_result := 0;
-    
-    ! Parse XML message
-    validation_result := PARSE_ISO20022_XML(xml_message, parsed_data);
-    
-    IF validation_result = 1 THEN
-        ! Validate business rules
-        IF VALIDATE_ISO20022_BUSINESS_RULES(parsed_data) THEN
-            ! Process the payment
-            CALL EXECUTE_ISO20022_PAYMENT(parsed_data);
-        ELSE
-            CALL REJECT_ISO20022("Business rule violation", xml_message);
-        END;
-    ELSE
-        CALL REJECT_ISO20022("XML parsing error", xml_message);
-    END;
-END;''',
-                'variables': ['{MSG_TYPE}']
-            }
-        }
-    
-    def generate_code_snippet(self, question: str) -> Dict[str, Any]:
-        """Generate code snippet from developer question with enhanced explanations."""
-        print(f"🤖 Generating implementation for: '{question}'")
-        
-        # Analyze the question to determine intent and category
-        intent_analysis = self.analyze_question_intent(question)
-        
-        # Find best matching pattern or template
-        if intent_analysis['pattern_match']:
-            # Use pattern-based generation
-            snippet = self.generate_from_pattern(intent_analysis)
-        else:
-            # Use template-based generation from corpus
-            snippet = self.generate_from_templates(intent_analysis)
-        
-        # Add implementation guidance
-        implementation_guidance = self.generate_implementation_guidance(intent_analysis, snippet)
-        
-        return {
-            'question': question,
-            'generated_code': snippet['code'],
-            'description': snippet['description'],
-            'category': intent_analysis['category'],
-            'confidence': intent_analysis['confidence'],
-            'suggestions': snippet.get('suggestions', []),
-            'implementation_steps': implementation_guidance['steps'],
-            'integration_notes': implementation_guidance['integration'],
-            'testing_approach': implementation_guidance['testing'],
-            'related_procedures': implementation_guidance['related']
-        }
-    
-    def generate_implementation_guidance(self, intent_analysis: Dict[str, Any], snippet: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate comprehensive implementation guidance for developers."""
-        category = intent_analysis['category']
-        action_type = intent_analysis['action_type']
-        
-        guidance = {
-            'steps': [],
-            'integration': [],
-            'testing': [],
-            'related': []
-        }
-        
-        # Category-specific implementation steps
-        if category == 'swift_processing':
-            guidance['steps'] = [
-                "1. Set up SWIFT message parsing infrastructure",
-                "2. Implement BIC validation and lookup functions",
-                "3. Add message format validation (MT103, MT202, etc.)",
-                "4. Implement gpi UETR tracking if required",
-                "5. Add error handling for malformed messages"
-            ]
-            guidance['integration'] = [
-                "• Integrate with SWIFT Alliance Access or similar gateway",
-                "• Connect to BIC directory service for validation",
-                "• Link to your core payment processing system",
-                "• Set up message queuing for high-volume processing"
-            ]
-            guidance['testing'] = [
-                "• Test with sample SWIFT MT messages",
-                "• Validate BIC format checking",
-                "• Test error handling with malformed messages",
-                "• Performance test with message volumes"
-            ]
-            guidance['related'] = [
-                "EXTRACT_BIC_CODE", "VALIDATE_SWIFT_FORMAT", 
-                "LOG_SWIFT_ERROR", "EXECUTE_SWIFT_PROCESSING"
-            ]
-        
-        elif category == 'fedwire_operations':
-            guidance['steps'] = [
-                "1. Set up Fedwire type code processing",
-                "2. Implement IMAD/OMAD generation logic",
-                "3. Add Federal Reserve participant validation",
-                "4. Implement cutoff time checking",
-                "5. Add settlement and confirmation handling"
-            ]
-            guidance['integration'] = [
-                "• Connect to FedLine Advantage or similar Fed interface",
-                "• Integrate with your settlement accounting system",
-                "• Link to participant directory for validation",
-                "• Set up real-time status reporting"
-            ]
-            guidance['testing'] = [
-                "• Test IMAD/OMAD generation uniqueness",
-                "• Validate type code processing",
-                "• Test cutoff time handling",
-                "• Verify settlement confirmation processing"
-            ]
-            guidance['related'] = [
-                "GENERATE_IMAD", "GENERATE_OMAD", "VALIDATE_FEDWIRE_FORMAT",
-                "EXECUTE_FEDWIRE_TRANSFER"
-            ]
-        
-        elif category == 'ofac_screening':
-            guidance['steps'] = [
-                "1. Set up OFAC SDN list access and updates",
-                "2. Implement fuzzy matching algorithms",
-                "3. Add name normalization and cleansing",
-                "4. Implement scoring and threshold logic",
-                "5. Add review workflow for manual processing"
-            ]
-            guidance['integration'] = [
-                "• Connect to OFAC SDN list updates (daily/real-time)",
-                "• Integrate with case management system",
-                "• Link to transaction hold/release mechanisms",
-                "• Set up compliance reporting interfaces"
-            ]
-            guidance['testing'] = [
-                "• Test with known OFAC match scenarios",
-                "• Validate false positive handling",
-                "• Test performance with large transaction volumes",
-                "• Verify audit trail completeness"
-            ]
-            guidance['related'] = [
-                "CHECK_OFAC_LIST", "HOLD_FOR_OFAC_REVIEW",
-                "LOG_OFAC_HIT", "LOG_OFAC_CLEAR"
-            ]
-        
-        elif category == 'validation':
-            guidance['steps'] = [
-                "1. Define validation rules and business logic",
-                "2. Implement field-level format checking",
-                "3. Add cross-field validation rules",
-                "4. Implement business rule validation",
-                "5. Add comprehensive error reporting"
-            ]
-            guidance['integration'] = [
-                "• Integrate with your data dictionary/schema",
-                "• Connect to reference data services",
-                "• Link to error handling and notification systems",
-                "• Set up validation rule configuration"
-            ]
-            guidance['testing'] = [
-                "• Test each validation rule individually",
-                "• Test with valid and invalid data sets",
-                "• Verify error message clarity",
-                "• Performance test validation logic"
-            ]
-            guidance['related'] = [
-                "CHECK_FORMAT", "VALIDATE_BUSINESS_RULES",
-                "LOG_VALIDATION_ERROR", "FORMAT_ERROR_MESSAGE"
-            ]
-        
-        elif category == 'iso20022_processing':
-            guidance['steps'] = [
-                "1. Set up XML parsing and validation infrastructure",
-                "2. Implement ISO 20022 schema validation",
-                "3. Add business rule validation per message type",
-                "4. Implement message transformation logic",
-                "5. Add comprehensive error handling"
-            ]
-            guidance['integration'] = [
-                "• Connect to ISO 20022 schema repositories",
-                "• Integrate with XML processing libraries",
-                "• Link to your payment processing core",
-                "• Set up message routing and queuing"
-            ]
-            guidance['testing'] = [
-                "• Test with ISO 20022 sample messages",
-                "• Validate XML schema compliance",
-                "• Test business rule validation",
-                "• Performance test with large XML messages"
-            ]
-            guidance['related'] = [
-                "PARSE_ISO20022_XML", "VALIDATE_ISO20022_BUSINESS_RULES",
-                "EXECUTE_ISO20022_PAYMENT", "REJECT_ISO20022"
-            ]
-        
-        elif category == 'error_handling':
-            guidance['steps'] = [
-                "1. Define error codes and categories",
-                "2. Implement error logging and tracking",
-                "3. Add error recovery and retry logic",
-                "4. Implement escalation procedures",
-                "5.
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\n👋 Interrupted by user. Goodbye!")
+    except Exception as e:
+        print(f"\n❌ Unexpected error: {e}")
+        print("Please check your corpus files and try again.")
