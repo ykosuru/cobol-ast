@@ -1,4 +1,835 @@
-#!/usr/bin/env python3
+elif category == 'error_handling':
+            guidance['steps'] = [
+                "1. Define error codes and categories",
+                "2. Implement error logging and tracking",
+                "3. Add error recovery and retry logic",
+                "4. Implement escalation procedures",
+                "5. Add comprehensive error reporting"
+            ]
+            guidance['integration'] = [
+                "• Connect to centralized logging system",
+                "• Integrate with monitoring and alerting",
+                "• Link to case management for escalations",
+                "• Set up error analytics and reporting"
+            ]
+            guidance['testing'] = [
+                "• Test each error scenario individually",
+                "• Verify error recovery mechanisms",
+                "• Test escalation procedures",
+                "• Validate error reporting accuracy"
+            ]
+            guidance['related'] = [
+                "LOG_ERROR", "FORMAT_ERROR_MESSAGE", 
+                "REPAIR_DATA_ERROR", "ESCALATE_ERROR"
+            ]
+        
+        else:
+            # Generic guidance
+            guidance['steps'] = [
+                "1. Analyze business requirements thoroughly",
+                "2. Design the procedure interface and parameters",
+                "3. Implement core business logic",
+                "4. Add comprehensive error handling",
+                "5. Implement logging and monitoring"
+            ]
+            guidance['integration'] = [
+                "• Integrate with existing system architecture",
+                "• Connect to required data sources",
+                "• Link to downstream processing systems",
+                "• Set up monitoring and alerting"
+            ]
+            guidance['testing'] = [
+                "• Unit test individual components",
+                "• Integration test with related systems",
+                "• Performance test under load",
+                "• User acceptance testing"
+            ]
+            guidance['related'] = ["Related procedures will depend on your specific implementation"]
+        
+        return guidance
+    
+    def analyze_question_intent(self, question: str) -> Dict[str, Any]:
+        """Analyze developer question to determine intent."""
+        question_lower = question.lower()
+        
+        # Pattern matching for specific intents
+        intent_patterns = {
+            'validation': ['validate', 'check', 'verify', 'format'],
+            'swift_processing': ['swift', 'mt103', 'mt202', 'bic', 'gpi'],
+            'fedwire_processing': ['fedwire', 'imad', 'omad', 'federal reserve'],
+            'ofac_screening': ['ofac', 'sanctions', 'aml', 'screening', 'watchlist'],
+            'error_handling': ['error', 'exception', 'handle', 'catch', 'recover'],
+            'iso20022_processing': ['iso20022', 'pacs', 'pain', 'camt', 'xml']
+        }
+        
+        # Score each category
+        category_scores = {}
+        for category, keywords in intent_patterns.items():
+            score = sum(1 for keyword in keywords if keyword in question_lower)
+            if score > 0:
+                category_scores[category] = score
+        
+        # Determine best category
+        if category_scores:
+            best_category = max(category_scores, key=category_scores.get)
+            confidence = category_scores[best_category] / len(intent_patterns[best_category])
+            pattern_match = best_category in self.pattern_library
+        else:
+            best_category = 'general'
+            confidence = 0.5
+            pattern_match = False
+        
+        # Extract specific entities (message types, etc.)
+        entities = self.extract_entities_from_question(question)
+        
+        return {
+            'category': best_category,
+            'confidence': confidence,
+            'pattern_match': pattern_match,
+            'entities': entities,
+            'action_type': self.determine_action_type(question_lower)
+        }
+    
+    def extract_entities_from_question(self, question: str) -> Dict[str, str]:
+        """Extract specific entities like message types from question."""
+        entities = {}
+        question_upper = question.upper()
+        
+        # SWIFT message types
+        swift_patterns = ['MT103', 'MT202', 'MT202COV', 'MT199', 'MT299']
+        for pattern in swift_patterns:
+            if pattern in question_upper:
+                entities['swift_message_type'] = pattern
+        
+        # ISO 20022 message types
+        iso_patterns = ['PACS.008', 'PACS.009', 'PAIN.001', 'CAMT.056', 'CAMT.029']
+        for pattern in iso_patterns:
+            if pattern.replace('.', '') in question_upper.replace('.', ''):
+                entities['iso_message_type'] = pattern
+        
+        # Fedwire type codes
+        if 'TYPE CODE' in question_upper or 'TYPECODE' in question_upper:
+            entities['fedwire_type'] = 'TYPE_CODE'
+        
+        return entities
+    
+    def determine_action_type(self, question_lower: str) -> str:
+        """Determine what type of action the developer wants."""
+        if any(word in question_lower for word in ['create', 'generate', 'build', 'make']):
+            return 'create'
+        elif any(word in question_lower for word in ['validate', 'check', 'verify']):
+            return 'validate'
+        elif any(word in question_lower for word in ['process', 'handle', 'execute']):
+            return 'process'
+        elif any(word in question_lower for word in ['screen', 'filter', 'check']):
+            return 'screen'
+        else:
+            return 'general'
+    
+    def generate_from_pattern(self, intent_analysis: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate code using predefined patterns."""
+        category = intent_analysis['category']
+        pattern = self.pattern_library[category]
+        
+        # Customize the template based on entities
+        customized_code = pattern['template']
+        variables = pattern.get('variables', [])
+        
+        # Replace variables with extracted entities or defaults
+        for variable in variables:
+            if variable == '{TYPE}' or variable == '{MESSAGE_TYPE}':
+                if 'swift_message_type' in intent_analysis['entities']:
+                    replacement = intent_analysis['entities']['swift_message_type']
+                elif 'iso_message_type' in intent_analysis['entities']:
+                    replacement = intent_analysis['entities']['iso_message_type'].replace('.', '')
+                else:
+                    replacement = 'GENERIC'
+                customized_code = customized_code.replace(variable, replacement)
+            
+            elif variable == '{type}':
+                # Lowercase version
+                if 'swift_message_type' in intent_analysis['entities']:
+                    replacement = intent_analysis['entities']['swift_message_type'].lower()
+                else:
+                    replacement = 'message'
+                customized_code = customized_code.replace(variable, replacement)
+            
+            elif variable == '{param}':
+                replacement = 'input_data'
+                customized_code = customized_code.replace(variable, replacement)
+            
+            elif variable == '{ENTITY}':
+                replacement = 'CUSTOMER'
+                customized_code = customized_code.replace(variable, replacement)
+            
+            elif variable == '{entity}':
+                replacement = 'customer'
+                customized_code = customized_code.replace(variable, replacement)
+            
+            elif variable == '{ERROR_TYPE}':
+                replacement = 'VALIDATION'
+                customized_code = customized_code.replace(variable, replacement)
+            
+            elif variable == '{MSG_TYPE}':
+                if 'iso_message_type' in intent_analysis['entities']:
+                    replacement = intent_analysis['entities']['iso_message_type'].replace('.', '_')
+                else:
+                    replacement = 'PACS008'
+                customized_code = customized_code.replace(variable, replacement)
+        
+        return {
+            'code': customized_code,
+            'description': pattern['description'],
+            'suggestions': [
+                "Customize the variable names for your specific use case",
+                "Add additional validation logic as needed",
+                "Update error handling for your system's requirements"
+            ]
+        }
+    
+    def generate_from_templates(self, intent_analysis: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate code using corpus templates."""
+        category = intent_analysis['category']
+        
+        # Find templates in this category
+        templates = self.template_library.get(category, [])
+        
+        if not templates:
+            # Fallback to general templates
+            all_templates = []
+            for cat_templates in self.template_library.values():
+                all_templates.extend(cat_templates)
+            templates = all_templates[:5]  # Take first 5 as examples
+        
+        if templates:
+            # Pick the best template (for now, just the first one)
+            best_template = templates[0]
+            
+            return {
+                'code': best_template['code'],
+                'description': f"Based on {best_template['name']}: {best_template['description']}",
+                'suggestions': [
+                    f"This template is based on the procedure: {best_template['name']}",
+                    f"Key functions used: {', '.join(best_template['functions'][:3])}",
+                    "Modify the procedure name and parameters for your needs"
+                ]
+            }
+        else:
+            # Fallback generic template
+            return {
+                'code': '''PROC YOUR_PROCEDURE_NAME(input_parameter);
+BEGIN
+    ! Add your implementation here
+    ! This is a generic template
+    
+    INT result := 0;
+    
+    ! Your code logic
+    
+    RETURN result;
+END;''',
+                'description': "Generic TAL procedure template",
+                'suggestions': [
+                    "Replace YOUR_PROCEDURE_NAME with a meaningful name",
+                    "Add appropriate parameters and return type",
+                    "Implement your specific business logic"
+                ]
+            }
+    
+    def extract_reusable_code(self, content: str) -> str:
+        """Extract clean, reusable code from chunk content."""
+        lines = content.split('\n')
+        cleaned_lines = []
+        
+        for line in lines:
+            stripped = line.strip()
+            # Keep meaningful code lines, remove comments
+            if (stripped and 
+                not stripped.startswith('!') and 
+                not stripped.startswith('//') and
+                len(stripped) > 3):
+                # Remove inline comments
+                if '!' in line:
+                    line = line[:line.index('!')].rstrip()
+                cleaned_lines.append(line)
+        
+        return '\n'.join(cleaned_lines).strip()
+    
+    def generate_template_description(self, chunk) -> str:
+        """Generate description for a code template."""
+        proc_name = chunk.procedure_name or "procedure"
+        category = getattr(chunk, 'semantic_category', 'general')
+        
+        # Generate description based on procedure name and category
+        if 'validate' in proc_name.lower():
+            return f"Validates data for {category.replace('_', ' ')}"
+        elif 'process' in proc_name.lower():
+            return f"Processes {category.replace('_', ' ')}"
+        elif 'screen' in proc_name.lower():
+            return f"Screens for {category.replace('_', ' ')}"
+        else:
+            return f"Handles {category.replace('_', ' ')} functionality"
+
+class StandaloneWireProcessingTrainer:
+    """Train models using only scikit-learn - no external downloads."""
+    
+    def __init__(self, corpus_paths):
+        if not SKLEARN_AVAILABLE:
+            raise ImportError("scikit-learn is required. Install with: pip install scikit-learn numpy")
+        
+        self.extractor = StandaloneCorpusDataExtractor(corpus_paths)
+        self.models = {}
+        self.vectorizers = {}
+    
+    def show_corpus_overview(self):
+        """Show overview of loaded corpora."""
+        stats = self.extractor.get_corpus_statistics()
+        
+        print(f"\n{'='*60}")
+        print("📊 COMBINED CORPUS OVERVIEW")
+        print("="*60)
+        print(f"Total chunks: {stats['total_chunks']}")
+        
+        if len(stats['corpus_sources']) > 1:
+            print(f"\n📁 Corpus Sources:")
+            for source, count in sorted(stats['corpus_sources'].items(), key=lambda x: x[1], reverse=True):
+                percentage = (count / stats['total_chunks']) * 100
+                print(f"   {source}: {count} chunks ({percentage:.1f}%)")
+        
+        print(f"\n🏷️ Semantic Categories:")
+        for category, count in sorted(stats['semantic_categories'].items(), key=lambda x: x[1], reverse=True)[:10]:
+            percentage = (count / stats['total_chunks']) * 100
+            print(f"   {category}: {count} chunks ({percentage:.1f}%)")
+        
+        print(f"\n🔗 Combined functionality groups: {stats['combined_functionality_groups']}")
+        
+        return stats
+
+    def train_classification_model(self):
+        """Train classification model using Random Forest."""
+        print("🏗️ Training wire processing classification model (standalone)...")
+        
+        # Get training data
+        features_list, labels, metadata_list = self.extractor.create_classification_dataset()
+        
+        if not features_list:
+            print("❌ No training data available")
+            return None
+        
+        # Analyze label distribution
+        label_counts = Counter(labels)
+        print(f"📊 Label distribution:")
+        for label, count in label_counts.most_common():
+            print(f"   {label}: {count} examples")
+        
+        # Prepare text features for TF-IDF
+        text_content = [features['content'] for features in features_list]
+        
+        # Remove content from feature dictionaries (will be handled by TF-IDF)
+        numerical_features = []
+        for features in features_list:
+            num_features = {k: v for k, v in features.items() if k != 'content'}
+            numerical_features.append(num_features)
+        
+        # Convert to arrays
+        feature_names = list(numerical_features[0].keys())
+        X_numerical = np.array([[features[name] for name in feature_names] 
+                               for features in numerical_features])
+        
+        # Create TF-IDF features
+        tfidf = TfidfVectorizer(max_features=500, stop_words='english', 
+                               ngram_range=(1, 2), min_df=2, max_df=0.8)
+        X_text = tfidf.fit_transform(text_content)
+        
+        # Combine numerical and text features
+        X_combined = np.hstack([X_numerical, X_text.toarray()])
+        y = np.array(labels)
+        
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(
+            X_combined, y, test_size=0.2, random_state=42, stratify=y
+        )
+        
+        print(f"📊 Training set: {len(X_train)} examples")
+        print(f"📊 Test set: {len(X_test)} examples")
+        
+        # Train multiple models and pick the best
+        models_to_try = {
+            'Random Forest': RandomForestClassifier(n_estimators=100, random_state=42),
+            'Logistic Regression': LogisticRegression(random_state=42, max_iter=1000),
+            'Naive Bayes': MultinomialNB(alpha=0.1)
+        }
+        
+        best_model = None
+        best_score = 0
+        best_name = ""
+        
+        for name, model in models_to_try.items():
+            print(f"\n🔧 Training {name}...")
+            
+            try:
+                model.fit(X_train, y_train)
+                
+                # Evaluate
+                train_score = model.score(X_train, y_train)
+                test_score = model.score(X_test, y_test)
+                
+                print(f"   Training accuracy: {train_score:.3f}")
+                print(f"   Test accuracy: {test_score:.3f}")
+                
+                if test_score > best_score:
+                    best_score = test_score
+                    best_model = model
+                    best_name = name
+                    
+            except Exception as e:
+                print(f"   ❌ Error training {name}: {e}")
+        
+        if best_model is None:
+            print("❌ No models trained successfully")
+            return None
+        
+        print(f"\n✅ Best model: {best_name} (accuracy: {best_score:.3f})")
+        
+        # Detailed evaluation of best model
+        y_pred = best_model.predict(X_test)
+        
+        print(f"\n📊 Detailed Classification Report:")
+        print(classification_report(y_test, y_pred))
+        
+        # Feature importance (if available)
+        if hasattr(best_model, 'feature_importances_'):
+            print(f"\n🔍 Top Features:")
+            feature_importance = best_model.feature_importances_
+            
+            # Combine feature names
+            all_feature_names = feature_names + [f"tfidf_{i}" for i in range(X_text.shape[1])]
+            
+            # Get top features
+            top_indices = np.argsort(feature_importance)[-10:][::-1]
+            for idx in top_indices:
+                if idx < len(all_feature_names):
+                    print(f"   {all_feature_names[idx]}: {feature_importance[idx]:.3f}")
+        
+        # Save model and metadata
+        model_data = {
+            'model': best_model,
+            'tfidf_vectorizer': tfidf,
+            'feature_names': feature_names,
+            'label_names': list(set(labels)),
+            'model_type': best_name,
+            'accuracy': best_score
+        }
+        
+        with open('standalone_classification_model.pkl', 'wb') as f:
+            pickle.dump(model_data, f)
+        
+        print(f"✅ Model saved to: standalone_classification_model.pkl")
+        
+        self.models['classification'] = model_data
+        return model_data
+    
+    def train_understanding_model(self):
+        """Train simple understanding model using similarity matching."""
+        print("🧠 Training understanding model (rule-based)...")
+        
+        examples = self.extractor.create_understanding_dataset()
+        
+        if not examples:
+            print("❌ No understanding examples available")
+            return None
+        
+        # Create a simple similarity-based understanding system
+        understanding_data = {
+            'examples': examples,
+            'vectorizer': TfidfVectorizer(max_features=200, stop_words='english')
+        }
+        
+        # Fit vectorizer on code examples
+        code_texts = [example[0] for example in examples]
+        understanding_data['code_vectors'] = understanding_data['vectorizer'].fit_transform(code_texts)
+        
+        # Save understanding model
+        with open('standalone_understanding_model.pkl', 'wb') as f:
+            pickle.dump(understanding_data, f)
+        
+        print(f"✅ Understanding model saved: standalone_understanding_model.pkl")
+        print(f"📊 {len(examples)} code-explanation pairs indexed")
+        
+        self.models['understanding'] = understanding_data
+        return understanding_data
+    
+    def test_classification_model(self, test_code: str):
+        """Test the classification model with sample code."""
+        if 'classification' not in self.models:
+            try:
+                with open('standalone_classification_model.pkl', 'rb') as f:
+                    self.models['classification'] = pickle.load(f)
+            except FileNotFoundError:
+                print("❌ No classification model found. Train first.")
+                return None
+        
+        model_data = self.models['classification']
+        model = model_data['model']
+        tfidf = model_data['tfidf_vectorizer']
+        feature_names = model_data['feature_names']
+        label_names = model_data['label_names']
+        
+        # Create a dummy chunk for feature extraction
+        test_chunk = type('TestChunk', (), {})()
+        test_chunk.content = test_code
+        test_chunk.procedure_name = ""
+        test_chunk.keywords = []
+        test_chunk.function_calls = []
+        test_chunk.word_count = len(test_code.split())
+        test_chunk.char_count = len(test_code)
+        
+        # Extract features
+        features = self.extractor.feature_extractor.extract_features(test_chunk)
+        
+        # Prepare features
+        X_numerical = np.array([[features.get(name, 0) for name in feature_names]])
+        X_text = tfidf.transform([test_code])
+        X_combined = np.hstack([X_numerical, X_text.toarray()])
+        
+        # Predict
+        prediction = model.predict(X_combined)[0]
+        probabilities = model.predict_proba(X_combined)[0] if hasattr(model, 'predict_proba') else None
+        
+        print(f"🎯 Predicted category: {prediction}")
+        if probabilities is not None:
+            confidence = max(probabilities)
+            print(f"🎯 Confidence: {confidence:.3f}")
+        
+        return prediction
+    
+    def test_understanding_model(self, test_code: str):
+        """Test the understanding model with sample code."""
+        if 'understanding' not in self.models:
+            try:
+                with open('standalone_understanding_model.pkl', 'rb') as f:
+                    self.models['understanding'] = pickle.load(f)
+            except FileNotFoundError:
+                print("❌ No understanding model found. Train first.")
+                return None
+        
+        model_data = self.models['understanding']
+        examples = model_data['examples']
+        vectorizer = model_data['vectorizer']
+        code_vectors = model_data['code_vectors']
+        
+        # Vectorize test code
+        test_vector = vectorizer.transform([test_code])
+        
+        # Find most similar code
+        from sklearn.metrics.pairwise import cosine_similarity
+        similarities = cosine_similarity(test_vector, code_vectors)[0]
+        best_match_idx = np.argmax(similarities)
+        
+        if similarities[best_match_idx] > 0.1:  # Minimum similarity threshold
+            explanation = examples[best_match_idx][1]
+            similarity = similarities[best_match_idx]
+            print(f"🧠 Explanation: {explanation}")
+            print(f"🎯 Similarity: {similarity:.3f}")
+            return explanation
+        else:
+            print("🧠 No similar code found in training data")
+            return "Code analysis: Unable to provide explanation based on training data."
+
+def get_corpus_files():
+    """Interactive function to get corpus file paths."""
+    print("📚 CORPUS FILE SELECTION")
+    print("="*30)
+    print("Options:")
+    print("1. Single corpus file")
+    print("2. Multiple corpus files")
+    print("3. All .pkl files in a directory")
+    
+    choice = input("\nSelect option (1-3): ").strip()
+    
+    if choice == "1":
+        # Single file
+        corpus_path = input("📁 Enter corpus file path (.pkl): ").strip()
+        if os.path.exists(corpus_path) and corpus_path.endswith('.pkl'):
+            return [corpus_path]
+        else:
+            print(f"❌ File not found or not a .pkl file: {corpus_path}")
+            return None
+    
+    elif choice == "2":
+        # Multiple files
+        corpus_paths = []
+        print("\n📁 Enter corpus file paths (one per line, empty line to finish):")
+        while True:
+            path = input("Corpus file: ").strip()
+            if not path:
+                break
+            if os.path.exists(path) and path.endswith('.pkl'):
+                corpus_paths.append(path)
+                print(f"   ✅ Added: {os.path.basename(path)}")
+            else:
+                print(f"   ❌ File not found or not a .pkl file: {path}")
+        
+        if corpus_paths:
+            return corpus_paths
+        else:
+            print("❌ No valid corpus files provided")
+            return None
+    
+    elif choice == "3":
+        # All .pkl files in directory
+        directory = input("📁 Enter directory path: ").strip()
+        if not os.path.exists(directory) or not os.path.isdir(directory):
+            print(f"❌ Directory not found: {directory}")
+            return None
+        
+        pkl_files = []
+        for file in os.listdir(directory):
+            if file.endswith('.pkl'):
+                full_path = os.path.join(directory, file)
+                pkl_files.append(full_path)
+        
+        if pkl_files:
+            print(f"\n📦 Found {len(pkl_files)} .pkl files:")
+            for i, file_path in enumerate(pkl_files, 1):
+                print(f"   {i}. {os.path.basename(file_path)}")
+            
+            use_all = input(f"\nUse all {len(pkl_files)} files? (y/n): ").strip().lower()
+            if use_all in ['y', 'yes', '']:
+                return pkl_files
+            else:
+                # Let user select specific files
+                selected_files = []
+                for i, file_path in enumerate(pkl_files, 1):
+                    use_file = input(f"Use {os.path.basename(file_path)}? (y/n): ").strip().lower()
+                    if use_file in ['y', 'yes']:
+                        selected_files.append(file_path)
+                
+                return selected_files if selected_files else None
+        else:
+            print(f"❌ No .pkl files found in directory: {directory}")
+            return None
+    
+    else:
+        print("❌ Invalid choice")
+        return None
+
+def show_example_questions():
+    """Show example questions developers can ask."""
+    examples = [
+        "How do I validate a SWIFT MT103 message?",
+        "Create a procedure to process Fedwire transfers",
+        "How to screen for OFAC sanctions?",
+        "Generate code to handle ISO 20022 PACS.008 messages",
+        "Create error handling for validation failures",
+        "How do I process CHIPS clearing transactions?",
+        "Validate BIC codes in wire transfers",
+        "Create a procedure for correspondent banking",
+        "How to generate IMAD for Fedwire?",
+        "Screen customer data for AML compliance"
+    ]
+    
+    print("\n💡 Example Questions You Can Ask:")
+    for i, example in enumerate(examples, 1):
+        print(f"   {i}. {example}")
+
+def main():
+    """Main function for standalone training and Q&A assistance."""
+    print("🤖 WIRE PROCESSING AI ASSISTANT")
+    print("="*60)
+    print("Powered by your indexed TAL codebase - No external downloads needed!")
+    print("🆕 Now supports multiple corpus files!")
+    
+    if not SKLEARN_AVAILABLE:
+        print("❌ Missing dependencies. Install with:")
+        print("   pip install scikit-learn numpy")
+        return
+    
+    # Get corpus file(s)
+    if len(sys.argv) > 1:
+        # Command line arguments - support multiple files
+        corpus_paths = []
+        for arg in sys.argv[1:]:
+            if os.path.exists(arg) and arg.endswith('.pkl'):
+                corpus_paths.append(arg)
+            else:
+                print(f"⚠️  Skipping invalid file: {arg}")
+        
+        if not corpus_paths:
+            print("❌ No valid .pkl files provided in command line")
+            corpus_paths = get_corpus_files()
+    else:
+        # Interactive mode
+        corpus_paths = get_corpus_files()
+    
+    if not corpus_paths:
+        print("❌ No corpus files to process")
+        return
+    
+    print(f"\n🚀 Initializing AI assistant with {len(corpus_paths)} corpus file(s)...")
+    
+    # Initialize trainer with multiple files
+    try:
+        trainer = StandaloneWireProcessingTrainer(corpus_paths)
+        
+        # Show combined corpus overview
+        trainer.show_corpus_overview()
+        
+    except Exception as e:
+        print(f"❌ Error initializing assistant: {e}")
+        return
+    
+    # Main menu loop
+    while True:
+        print(f"\n🎯 AI ASSISTANT OPTIONS:")
+        print("1. 💬 Ask coding questions & get implementations")
+        print("2. Train classification model (Random Forest + TF-IDF)")
+        print("3. Train understanding model (Similarity-based)")
+        print("4. Train both models")
+        print("5. Test existing models with TAL code")
+        print("6. Show detailed corpus statistics")
+        print("7. Exit")
+        
+        choice = input("\nSelect option (1-7): ").strip()
+        
+        if choice == "1":
+            print("\n🤖 WIRE PROCESSING DEVELOPMENT ASSISTANT")
+            print("="*50)
+            print("Ask any questions about implementing wire processing code!")
+            
+            # Initialize code generator with multiple corpus files
+            generator = CodeSnippetGenerator(corpus_paths)
+            
+            print(f"💡 Assistant initialized with {len(corpus_paths)} corpus file(s)")
+            show_example_questions()
+            
+            while True:
+                question = input("\n💬 What do you want to implement? (or 'quit' to go back): ").strip()
+                
+                if question.lower() in ['quit', 'exit', 'q', 'back']:
+                    break
+                
+                if question:
+                    try:
+                        result = generator.generate_code_snippet(question)
+                        
+                        print(f"\n{'='*70}")
+                        print(f"🎯 IMPLEMENTATION GUIDE & CODE")
+                        print(f"{'='*70}")
+                        print(f"📝 Question: {result['question']}")
+                        print(f"🏷️ Category: {result['category']}")
+                        print(f"🎯 Confidence: {result['confidence']:.2f}")
+                        print(f"📖 Description: {result['description']}")
+                        
+                        print(f"\n💻 Generated TAL Code:")
+                        print("-" * 50)
+                        print(result['generated_code'])
+                        print("-" * 50)
+                        
+                        # Implementation steps
+                        if result.get('implementation_steps'):
+                            print(f"\n🚀 Implementation Steps:")
+                            for step in result['implementation_steps']:
+                                print(f"   {step}")
+                        
+                        # Integration guidance
+                        if result.get('integration_notes'):
+                            print(f"\n🔗 Integration Notes:")
+                            for note in result['integration_notes']:
+                                print(f"   {note}")
+                        
+                        # Testing approach
+                        if result.get('testing_approach'):
+                            print(f"\n🧪 Testing Approach:")
+                            for test in result['testing_approach']:
+                                print(f"   {test}")
+                        
+                        # Related procedures
+                        if result.get('related_procedures'):
+                            print(f"\n🔧 Related Procedures You May Need:")
+                            for proc in result['related_procedures']:
+                                print(f"   • {proc}")
+                        
+                        # General suggestions
+                        if result.get('suggestions'):
+                            print(f"\n💡 Code Customization Tips:")
+                            for i, suggestion in enumerate(result['suggestions'], 1):
+                                print(f"   {i}. {suggestion}")
+                        
+                        # Ask if they want to generate related code
+                        print(f"\n" + "="*50)
+                        follow_up = input("💬 Need help with any related procedures? (y/n): ").strip().lower()
+                        if follow_up in ['y', 'yes']:
+                            related_question = input("What specifically do you need help with? ").strip()
+                            if related_question:
+                                print(f"\n🔄 Generating related implementation...")
+                                question = related_question
+                                continue
+                        
+                    except Exception as e:
+                        print(f"❌ Error generating implementation: {e}")
+                        print("💡 Try rephrasing your question or being more specific")
+                else:
+                    print("❌ Please ask a specific implementation question")
+                    print("💡 Example: 'How do I validate SWIFT MT103 messages?'")
+        
+        elif choice == "2":
+            model = trainer.train_classification_model()
+            if model:
+                print("\n🧪 Testing with sample code...")
+                test_code = """
+PROC VALIDATE_SWIFT_MT103(message);
+BEGIN
+    CALL EXTRACT_BIC_CODE(message, bic_field);
+    IF NOT VALIDATE_BIC_FORMAT(bic_field) THEN
+        RETURN 0;
+    END;
+END;
+"""
+                trainer.test_classification_model(test_code)
+        
+        elif choice == "3":
+            model = trainer.train_understanding_model()
+            if model:
+                print("\n🧪 Testing understanding...")
+                test_code = """
+PROC VALIDATE_SWIFT_MT103(message);
+BEGIN
+    CALL EXTRACT_BIC_CODE(message, bic_field);
+END;
+"""
+                trainer.test_understanding_model(test_code)
+        
+        elif choice == "4":
+            print("🚀 Training both models...")
+            trainer.train_classification_model()
+            trainer.train_understanding_model()
+            print("✅ Both models trained!")
+        
+        elif choice == "5":
+            print("🧪 Testing existing models...")
+            test_code = input("Enter TAL code to test: ").strip()
+            if test_code:
+                print("\n🏷️ Classification test:")
+                trainer.test_classification_model(test_code)
+                print("\n🧠 Understanding test:")
+                trainer.test_understanding_model(test_code)
+        
+        elif choice == "6":
+            # Show detailed statistics
+            trainer.show_corpus_overview()
+            print("📊 Detailed corpus statistics displayed above")
+        
+        elif choice == "7":
+            print("👋 Goodbye! Hope the assistant was helpful!")
+            break
+        
+        else:
+            print("❌ Invalid choice. Please select 1-7.")
+
+if __name__ == "__main__":
+    import sys
+    main()#!/usr/bin/env python3
 """
 Standalone AI Model Trainer for Indexed TAL Code
 
@@ -172,7 +1003,7 @@ class StandaloneCorpusDataExtractor:
         self.feature_extractor = WireProcessingFeatureExtractor()
         self.corpus_metadata = {}
         self.load_multiple_corpora()
-    
+
     def load_multiple_corpora(self):
         """Load multiple indexed corpora and combine them."""
         print(f"📚 Loading {len(self.corpus_paths)} corpus files...")
@@ -291,7 +1122,7 @@ class StandaloneCorpusDataExtractor:
             stats['semantic_categories'][category] = stats['semantic_categories'].get(category, 0) + 1
         
         return stats
-    
+
     def create_classification_dataset(self) -> Tuple[List[Dict], List[str], List[Dict]]:
         """Create feature vectors and labels for classification."""
         features_list = []
@@ -760,852 +1591,4 @@ END;''',
                 "2. Implement error logging and tracking",
                 "3. Add error recovery and retry logic",
                 "4. Implement escalation procedures",
-                "5. Add comprehensive error reporting"
-            ]
-            guidance['integration'] = [
-                "• Connect to centralized logging system",
-                "• Integrate with monitoring and alerting",
-                "• Link to case management for escalations",
-                "• Set up error analytics and reporting"
-            ]
-            guidance['testing'] = [
-                "• Test each error scenario individually",
-                "• Verify error recovery mechanisms",
-                "• Test escalation procedures",
-                "• Validate error reporting accuracy"
-            ]
-            guidance['related'] = [
-                "LOG_ERROR", "FORMAT_ERROR_MESSAGE", 
-                "REPAIR_DATA_ERROR", "ESCALATE_ERROR"
-            ]
-        
-        else:
-            # Generic guidance
-            guidance['steps'] = [
-                "1. Analyze business requirements thoroughly",
-                "2. Design the procedure interface and parameters",
-                "3. Implement core business logic",
-                "4. Add comprehensive error handling",
-                "5. Implement logging and monitoring"
-            ]
-            guidance['integration'] = [
-                "• Integrate with existing system architecture",
-                "• Connect to required data sources",
-                "• Link to downstream processing systems",
-                "• Set up monitoring and alerting"
-            ]
-            guidance['testing'] = [
-                "• Unit test individual components",
-                "• Integration test with related systems",
-                "• Performance test under load",
-                "• User acceptance testing"
-            ]
-            guidance['related'] = ["Related procedures will depend on your specific implementation"]
-        
-        return guidance
-    
-    def analyze_question_intent(self, question: str) -> Dict[str, Any]:
-        """Analyze developer question to determine intent."""
-        question_lower = question.lower()
-        
-        # Pattern matching for specific intents
-        intent_patterns = {
-            'validation': ['validate', 'check', 'verify', 'format'],
-            'swift_processing': ['swift', 'mt103', 'mt202', 'bic', 'gpi'],
-            'fedwire_processing': ['fedwire', 'imad', 'omad', 'federal reserve'],
-            'ofac_screening': ['ofac', 'sanctions', 'aml', 'screening', 'watchlist'],
-            'error_handling': ['error', 'exception', 'handle', 'catch', 'recover'],
-            'iso20022_processing': ['iso20022', 'pacs', 'pain', 'camt', 'xml']
-        }
-        
-        # Score each category
-        category_scores = {}
-        for category, keywords in intent_patterns.items():
-            score = sum(1 for keyword in keywords if keyword in question_lower)
-            if score > 0:
-                category_scores[category] = score
-        
-        # Determine best category
-        if category_scores:
-            best_category = max(category_scores, key=category_scores.get)
-            confidence = category_scores[best_category] / len(intent_patterns[best_category])
-            pattern_match = best_category in self.pattern_library
-        else:
-            best_category = 'general'
-            confidence = 0.5
-            pattern_match = False
-        
-        # Extract specific entities (message types, etc.)
-        entities = self.extract_entities_from_question(question)
-        
-        return {
-            'category': best_category,
-            'confidence': confidence,
-            'pattern_match': pattern_match,
-            'entities': entities,
-            'action_type': self.determine_action_type(question_lower)
-        }
-    
-    def extract_entities_from_question(self, question: str) -> Dict[str, str]:
-        """Extract specific entities like message types from question."""
-        entities = {}
-        question_upper = question.upper()
-        
-        # SWIFT message types
-        swift_patterns = ['MT103', 'MT202', 'MT202COV', 'MT199', 'MT299']
-        for pattern in swift_patterns:
-            if pattern in question_upper:
-                entities['swift_message_type'] = pattern
-        
-        # ISO 20022 message types
-        iso_patterns = ['PACS.008', 'PACS.009', 'PAIN.001', 'CAMT.056', 'CAMT.029']
-        for pattern in iso_patterns:
-            if pattern.replace('.', '') in question_upper.replace('.', ''):
-                entities['iso_message_type'] = pattern
-        
-        # Fedwire type codes
-        if 'TYPE CODE' in question_upper or 'TYPECODE' in question_upper:
-            entities['fedwire_type'] = 'TYPE_CODE'
-        
-        return entities
-    
-    def determine_action_type(self, question_lower: str) -> str:
-        """Determine what type of action the developer wants."""
-        if any(word in question_lower for word in ['create', 'generate', 'build', 'make']):
-            return 'create'
-        elif any(word in question_lower for word in ['validate', 'check', 'verify']):
-            return 'validate'
-        elif any(word in question_lower for word in ['process', 'handle', 'execute']):
-            return 'process'
-        elif any(word in question_lower for word in ['screen', 'filter', 'check']):
-            return 'screen'
-        else:
-            return 'general'
-    
-    def generate_from_pattern(self, intent_analysis: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate code using predefined patterns."""
-        category = intent_analysis['category']
-        pattern = self.pattern_library[category]
-        
-        # Customize the template based on entities
-        customized_code = pattern['template']
-        variables = pattern.get('variables', [])
-        
-        # Replace variables with extracted entities or defaults
-        for variable in variables:
-            if variable == '{TYPE}' or variable == '{MESSAGE_TYPE}':
-                if 'swift_message_type' in intent_analysis['entities']:
-                    replacement = intent_analysis['entities']['swift_message_type']
-                elif 'iso_message_type' in intent_analysis['entities']:
-                    replacement = intent_analysis['entities']['iso_message_type'].replace('.', '')
-                else:
-                    replacement = 'GENERIC'
-                customized_code = customized_code.replace(variable, replacement)
-            
-            elif variable == '{type}':
-                # Lowercase version
-                if 'swift_message_type' in intent_analysis['entities']:
-                    replacement = intent_analysis['entities']['swift_message_type'].lower()
-                else:
-                    replacement = 'message'
-                customized_code = customized_code.replace(variable, replacement)
-            
-            elif variable == '{param}':
-                replacement = 'input_data'
-                customized_code = customized_code.replace(variable, replacement)
-            
-            elif variable == '{ENTITY}':
-                replacement = 'CUSTOMER'
-                customized_code = customized_code.replace(variable, replacement)
-            
-            elif variable == '{entity}':
-                replacement = 'customer'
-                customized_code = customized_code.replace(variable, replacement)
-            
-            elif variable == '{ERROR_TYPE}':
-                replacement = 'VALIDATION'
-                customized_code = customized_code.replace(variable, replacement)
-            
-            elif variable == '{MSG_TYPE}':
-                if 'iso_message_type' in intent_analysis['entities']:
-                    replacement = intent_analysis['entities']['iso_message_type'].replace('.', '_')
-                else:
-                    replacement = 'PACS008'
-                customized_code = customized_code.replace(variable, replacement)
-        
-        return {
-            'code': customized_code,
-            'description': pattern['description'],
-            'suggestions': [
-                "Customize the variable names for your specific use case",
-                "Add additional validation logic as needed",
-                "Update error handling for your system's requirements"
-            ]
-        }
-    
-    def generate_from_templates(self, intent_analysis: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate code using corpus templates."""
-        category = intent_analysis['category']
-        
-        # Find templates in this category
-        templates = self.template_library.get(category, [])
-        
-        if not templates:
-            # Fallback to general templates
-            all_templates = []
-            for cat_templates in self.template_library.values():
-                all_templates.extend(cat_templates)
-            templates = all_templates[:5]  # Take first 5 as examples
-        
-        if templates:
-            # Pick the best template (for now, just the first one)
-            best_template = templates[0]
-            
-            return {
-                'code': best_template['code'],
-                'description': f"Based on {best_template['name']}: {best_template['description']}",
-                'suggestions': [
-                    f"This template is based on the procedure: {best_template['name']}",
-                    f"Key functions used: {', '.join(best_template['functions'][:3])}",
-                    "Modify the procedure name and parameters for your needs"
-                ]
-            }
-        else:
-            # Fallback generic template
-            return {
-                'code': '''PROC YOUR_PROCEDURE_NAME(input_parameter);
-BEGIN
-    ! Add your implementation here
-    ! This is a generic template
-    
-    INT result := 0;
-    
-    ! Your code logic
-    
-    RETURN result;
-END;''',
-                'description': "Generic TAL procedure template",
-                'suggestions': [
-                    "Replace YOUR_PROCEDURE_NAME with a meaningful name",
-                    "Add appropriate parameters and return type",
-                    "Implement your specific business logic"
-                ]
-            }
-    
-    def extract_reusable_code(self, content: str) -> str:
-        """Extract clean, reusable code from chunk content."""
-        lines = content.split('\n')
-        cleaned_lines = []
-        
-        for line in lines:
-            stripped = line.strip()
-            # Keep meaningful code lines, remove comments
-            if (stripped and 
-                not stripped.startswith('!') and 
-                not stripped.startswith('//') and
-                len(stripped) > 3):
-                # Remove inline comments
-                if '!' in line:
-                    line = line[:line.index('!')].rstrip()
-                cleaned_lines.append(line)
-        
-        return '\n'.join(cleaned_lines).strip()
-    
-    def generate_template_description(self, chunk) -> str:
-        """Generate description for a code template."""
-        proc_name = chunk.procedure_name or "procedure"
-        category = getattr(chunk, 'semantic_category', 'general')
-        
-        # Generate description based on procedure name and category
-        if 'validate' in proc_name.lower():
-            return f"Validates data for {category.replace('_', ' ')}"
-        elif 'process' in proc_name.lower():
-            return f"Processes {category.replace('_', ' ')}"
-        elif 'screen' in proc_name.lower():
-            return f"Screens for {category.replace('_', ' ')}"
-        else:
-            return f"Handles {category.replace('_', ' ')} functionality"
-
-class StandaloneWireProcessingTrainer:
-    """Train models using only scikit-learn - no external downloads."""
-    
-    def __init__(self, corpus_paths):
-        if not SKLEARN_AVAILABLE:
-            raise ImportError("scikit-learn is required. Install with: pip install scikit-learn numpy")
-        
-        self.extractor = StandaloneCorpusDataExtractor(corpus_paths)
-        self.models = {}
-        self.vectorizers = {}
-    
-    def show_corpus_overview(self):
-        """Show overview of loaded corpora."""
-        stats = self.extractor.get_corpus_statistics()
-        
-        print(f"\n{'='*60}")
-        print("📊 COMBINED CORPUS OVERVIEW")
-        print("="*60)
-        print(f"Total chunks: {stats['total_chunks']}")
-        
-        if len(stats['corpus_sources']) > 1:
-            print(f"\n📁 Corpus Sources:")
-            for source, count in sorted(stats['corpus_sources'].items(), key=lambda x: x[1], reverse=True):
-                percentage = (count / stats['total_chunks']) * 100
-                print(f"   {source}: {count} chunks ({percentage:.1f}%)")
-        
-        print(f"\n🏷️ Semantic Categories:")
-        for category, count in sorted(stats['semantic_categories'].items(), key=lambda x: x[1], reverse=True)[:10]:
-            percentage = (count / stats['total_chunks']) * 100
-            print(f"   {category}: {count} chunks ({percentage:.1f}%)")
-        
-        print(f"\n🔗 Combined functionality groups: {stats['combined_functionality_groups']}")
-        
-        return stats
-    
-    def train_classification_model(self):
-        """Train classification model using Random Forest."""
-        print("🏗️ Training wire processing classification model (standalone)...")
-        
-        # Get training data
-        features_list, labels, metadata_list = self.extractor.create_classification_dataset()
-        
-        if not features_list:
-            print("❌ No training data available")
-            return None
-        
-        # Analyze label distribution
-        label_counts = Counter(labels)
-        print(f"📊 Label distribution:")
-        for label, count in label_counts.most_common():
-            print(f"   {label}: {count} examples")
-        
-        # Prepare text features for TF-IDF
-        text_content = [features['content'] for features in features_list]
-        
-        # Remove content from feature dictionaries (will be handled by TF-IDF)
-        numerical_features = []
-        for features in features_list:
-            num_features = {k: v for k, v in features.items() if k != 'content'}
-            numerical_features.append(num_features)
-        
-        # Convert to arrays
-        feature_names = list(numerical_features[0].keys())
-        X_numerical = np.array([[features[name] for name in feature_names] 
-                               for features in numerical_features])
-        
-        # Create TF-IDF features
-        tfidf = TfidfVectorizer(max_features=500, stop_words='english', 
-                               ngram_range=(1, 2), min_df=2, max_df=0.8)
-        X_text = tfidf.fit_transform(text_content)
-        
-        # Combine numerical and text features
-        X_combined = np.hstack([X_numerical, X_text.toarray()])
-        y = np.array(labels)
-        
-        # Split data
-        X_train, X_test, y_train, y_test = train_test_split(
-            X_combined, y, test_size=0.2, random_state=42, stratify=y
-        )
-        
-        print(f"📊 Training set: {len(X_train)} examples")
-        print(f"📊 Test set: {len(X_test)} examples")
-        
-        # Train multiple models and pick the best
-        models_to_try = {
-            'Random Forest': RandomForestClassifier(n_estimators=100, random_state=42),
-            'Logistic Regression': LogisticRegression(random_state=42, max_iter=1000),
-            'Naive Bayes': MultinomialNB(alpha=0.1)
-        }
-        
-        best_model = None
-        best_score = 0
-        best_name = ""
-        
-        for name, model in models_to_try.items():
-            print(f"\n🔧 Training {name}...")
-            
-            try:
-                model.fit(X_train, y_train)
-                
-                # Evaluate
-                train_score = model.score(X_train, y_train)
-                test_score = model.score(X_test, y_test)
-                
-                print(f"   Training accuracy: {train_score:.3f}")
-                print(f"   Test accuracy: {test_score:.3f}")
-                
-                if test_score > best_score:
-                    best_score = test_score
-                    best_model = model
-                    best_name = name
-                    
-            except Exception as e:
-                print(f"   ❌ Error training {name}: {e}")
-        
-        if best_model is None:
-            print("❌ No models trained successfully")
-            return None
-        
-        print(f"\n✅ Best model: {best_name} (accuracy: {best_score:.3f})")
-        
-        # Detailed evaluation of best model
-        y_pred = best_model.predict(X_test)
-        
-        print(f"\n📊 Detailed Classification Report:")
-        print(classification_report(y_test, y_pred))
-        
-        # Feature importance (if available)
-        if hasattr(best_model, 'feature_importances_'):
-            print(f"\n🔍 Top Features:")
-            feature_importance = best_model.feature_importances_
-            
-            # Combine feature names
-            all_feature_names = feature_names + [f"tfidf_{i}" for i in range(X_text.shape[1])]
-            
-            # Get top features
-            top_indices = np.argsort(feature_importance)[-10:][::-1]
-            for idx in top_indices:
-                if idx < len(all_feature_names):
-                    print(f"   {all_feature_names[idx]}: {feature_importance[idx]:.3f}")
-        
-        # Save model and metadata
-        model_data = {
-            'model': best_model,
-            'tfidf_vectorizer': tfidf,
-            'feature_names': feature_names,
-            'label_names': list(set(labels)),
-            'model_type': best_name,
-            'accuracy': best_score
-        }
-        
-        with open('standalone_classification_model.pkl', 'wb') as f:
-            pickle.dump(model_data, f)
-        
-        print(f"✅ Model saved to: standalone_classification_model.pkl")
-        
-        self.models['classification'] = model_data
-        return model_data
-    
-    def train_understanding_model(self):
-        """Train simple understanding model using similarity matching."""
-        print("🧠 Training understanding model (rule-based)...")
-        
-        examples = self.extractor.create_understanding_dataset()
-        
-        if not examples:
-            print("❌ No understanding examples available")
-            return None
-        
-        # Create a simple similarity-based understanding system
-        understanding_data = {
-            'examples': examples,
-            'vectorizer': TfidfVectorizer(max_features=200, stop_words='english')
-        }
-        
-        # Fit vectorizer on code examples
-        code_texts = [example[0] for example in examples]
-        understanding_data['code_vectors'] = understanding_data['vectorizer'].fit_transform(code_texts)
-        
-        # Save understanding model
-        with open('standalone_understanding_model.pkl', 'wb') as f:
-            pickle.dump(understanding_data, f)
-        
-        print(f"✅ Understanding model saved: standalone_understanding_model.pkl")
-        print(f"📊 {len(examples)} code-explanation pairs indexed")
-        
-        self.models['understanding'] = understanding_data
-        return understanding_data
-    
-    def test_classification_model(self, test_code: str):
-        """Test the classification model with sample code."""
-        if 'classification' not in self.models:
-            try:
-                with open('standalone_classification_model.pkl', 'rb') as f:
-                    self.models['classification'] = pickle.load(f)
-            except FileNotFoundError:
-                print("❌ No classification model found. Train first.")
-                return None
-        
-        model_data = self.models['classification']
-        model = model_data['model']
-        tfidf = model_data['tfidf_vectorizer']
-        feature_names = model_data['feature_names']
-        label_names = model_data['label_names']
-        
-        # Create a dummy chunk for feature extraction
-        test_chunk = type('TestChunk', (), {})()
-        test_chunk.content = test_code
-        test_chunk.procedure_name = ""
-        test_chunk.keywords = []
-        test_chunk.function_calls = []
-        test_chunk.word_count = len(test_code.split())
-        test_chunk.char_count = len(test_code)
-        
-        # Extract features
-        features = self.extractor.feature_extractor.extract_features(test_chunk)
-        
-        # Prepare features
-        X_numerical = np.array([[features.get(name, 0) for name in feature_names]])
-        X_text = tfidf.transform([test_code])
-        X_combined = np.hstack([X_numerical, X_text.toarray()])
-        
-        # Predict
-        prediction = model.predict(X_combined)[0]
-        probabilities = model.predict_proba(X_combined)[0] if hasattr(model, 'predict_proba') else None
-        
-        print(f"🎯 Predicted category: {prediction}")
-        if probabilities is not None:
-            confidence = max(probabilities)
-            print(f"🎯 Confidence: {confidence:.3f}")
-        
-        return prediction
-    
-    def test_understanding_model(self, test_code: str):
-        """Test the understanding model with sample code."""
-        if 'understanding' not in self.models:
-            try:
-                with open('standalone_understanding_model.pkl', 'rb') as f:
-                    self.models['understanding'] = pickle.load(f)
-            except FileNotFoundError:
-                print("❌ No understanding model found. Train first.")
-                return None
-        
-        model_data = self.models['understanding']
-        examples = model_data['examples']
-        vectorizer = model_data['vectorizer']
-        code_vectors = model_data['code_vectors']
-        
-        # Vectorize test code
-        test_vector = vectorizer.transform([test_code])
-        
-        # Find most similar code
-        from sklearn.metrics.pairwise import cosine_similarity
-        similarities = cosine_similarity(test_vector, code_vectors)[0]
-        best_match_idx = np.argmax(similarities)
-        
-        if similarities[best_match_idx] > 0.1:  # Minimum similarity threshold
-            explanation = examples[best_match_idx][1]
-            similarity = similarities[best_match_idx]
-            print(f"🧠 Explanation: {explanation}")
-            print(f"🎯 Similarity: {similarity:.3f}")
-            return explanation
-        else:
-            print("🧠 No similar code found in training data")
-            return "Code analysis: Unable to provide explanation based on training data."
-    """Train models using only scikit-learn - no external downloads."""
-    
-    def __init__(self, corpus_path: str):
-        if not SKLEARN_AVAILABLE:
-            raise ImportError("scikit-learn is required. Install with: pip install scikit-learn numpy")
-        
-        self.extractor = StandaloneCorpusDataExtractor(corpus_path)
-        self.models = {}
-        self.vectorizers = {}
-    
-    def train_classification_model(self):
-        """Train classification model using Random Forest."""
-        print("🏗️ Training wire processing classification model (standalone)...")
-        
-        # Get training data
-        features_list, labels, metadata_list = self.extractor.create_classification_dataset()
-        
-        if not features_list:
-            print("❌ No training data available")
-            return None
-        
-        # Analyze label distribution
-        label_counts = Counter(labels)
-        print(f"📊 Label distribution:")
-        for label, count in label_counts.most_common():
-            print(f"   {label}: {count} examples")
-        
-        # Prepare text features for TF-IDF
-        text_content = [features['content'] for features in features_list]
-        
-        # Remove content from feature dictionaries (will be handled by TF-IDF)
-        numerical_features = []
-        for features in features_list:
-            num_features = {k: v for k, v in features.items() if k != 'content'}
-            numerical_features.append(num_features)
-        
-        # Convert to arrays
-        feature_names = list(numerical_features[0].keys())
-        X_numerical = np.array([[features[name] for name in feature_names] 
-                               for features in numerical_features])
-        
-        # Create TF-IDF features
-        tfidf = TfidfVectorizer(max_features=500, stop_words='english', 
-                               ngram_range=(1, 2), min_df=2, max_df=0.8)
-        X_text = tfidf.fit_transform(text_content)
-        
-        # Combine numerical and text features
-        X_combined = np.hstack([X_numerical, X_text.toarray()])
-        y = np.array(labels)
-        
-        # Split data
-        X_train, X_test, y_train, y_test = train_test_split(
-            X_combined, y, test_size=0.2, random_state=42, stratify=y
-        )
-        
-        print(f"📊 Training set: {len(X_train)} examples")
-        print(f"📊 Test set: {len(X_test)} examples")
-        
-        # Train multiple models and pick the best
-        models_to_try = {
-            'Random Forest': RandomForestClassifier(n_estimators=100, random_state=42),
-            'Logistic Regression': LogisticRegression(random_state=42, max_iter=1000),
-            'Naive Bayes': MultinomialNB(alpha=0.1)
-        }
-        
-        best_model = None
-        best_score = 0
-        best_name = ""
-        
-        for name, model in models_to_try.items():
-            print(f"\n🔧 Training {name}...")
-            
-            try:
-                model.fit(X_train, y_train)
-                
-                # Evaluate
-                train_score = model.score(X_train, y_train)
-                test_score = model.score(X_test, y_test)
-                
-                print(f"   Training accuracy: {train_score:.3f}")
-                print(f"   Test accuracy: {test_score:.3f}")
-                
-                if test_score > best_score:
-                    best_score = test_score
-                    best_model = model
-                    best_name = name
-                    
-            except Exception as e:
-                print(f"   ❌ Error training {name}: {e}")
-        
-        if best_model is None:
-            print("❌ No models trained successfully")
-            return None
-        
-        print(f"\n✅ Best model: {best_name} (accuracy: {best_score:.3f})")
-        
-        # Detailed evaluation of best model
-        y_pred = best_model.predict(X_test)
-        
-        print(f"\n📊 Detailed Classification Report:")
-        print(classification_report(y_test, y_pred))
-        
-        # Feature importance (if available)
-        if hasattr(best_model, 'feature_importances_'):
-            print(f"\n🔍 Top Features:")
-            feature_importance = best_model.feature_importances_
-            
-            # Combine feature names
-            all_feature_names = feature_names + [f"tfidf_{i}" for i in range(X_text.shape[1])]
-            
-            # Get top features
-            top_indices = np.argsort(feature_importance)[-10:][::-1]
-            for idx in top_indices:
-                if idx < len(all_feature_names):
-                    print(f"   {all_feature_names[idx]}: {feature_importance[idx]:.3f}")
-        
-        # Save model and metadata
-        model_data = {
-            'model': best_model,
-            'tfidf_vectorizer': tfidf,
-            'feature_names': feature_names,
-            'label_names': list(set(labels)),
-            'model_type': best_name,
-            'accuracy': best_score
-        }
-        
-        with open('standalone_classification_model.pkl', 'wb') as f:
-            pickle.dump(model_data, f)
-        
-        print(f"✅ Model saved to: standalone_classification_model.pkl")
-        
-        self.models['classification'] = model_data
-        return model_data
-    
-    def train_understanding_model(self):
-        """Train simple understanding model using similarity matching."""
-        print("🧠 Training understanding model (rule-based)...")
-        
-        examples = self.extractor.create_understanding_dataset()
-        
-        if not examples:
-            print("❌ No understanding examples available")
-            return None
-        
-        # Create a simple similarity-based understanding system
-        understanding_data = {
-            'examples': examples,
-            'vectorizer': TfidfVectorizer(max_features=200, stop_words='english')
-        }
-        
-        # Fit vectorizer on code examples
-        code_texts = [example[0] for example in examples]
-        understanding_data['code_vectors'] = understanding_data['vectorizer'].fit_transform(code_texts)
-        
-        # Save understanding model
-        with open('standalone_understanding_model.pkl', 'wb') as f:
-            pickle.dump(understanding_data, f)
-        
-        print(f"✅ Understanding model saved: standalone_understanding_model.pkl")
-        print(f"📊 {len(examples)} code-explanation pairs indexed")
-        
-        self.models['understanding'] = understanding_data
-        return understanding_data
-    
-    def test_classification_model(self, test_code: str):
-        """Test the classification model with sample code."""
-        if 'classification' not in self.models:
-            try:
-                with open('standalone_classification_model.pkl', 'rb') as f:
-                    self.models['classification'] = pickle.load(f)
-            except FileNotFoundError:
-                print("❌ No classification model found. Train first.")
-                return None
-        
-        model_data = self.models['classification']
-        model = model_data['model']
-        tfidf = model_data['tfidf_vectorizer']
-        feature_names = model_data['feature_names']
-        label_names = model_data['label_names']
-        
-        # Create a dummy chunk for feature extraction
-        test_chunk = type('TestChunk', (), {})()
-        test_chunk.content = test_code
-        test_chunk.procedure_name = ""
-        test_chunk.keywords = []
-        test_chunk.function_calls = []
-        test_chunk.word_count = len(test_code.split())
-        test_chunk.char_count = len(test_code)
-        
-        # Extract features
-        features = self.extractor.feature_extractor.extract_features(test_chunk)
-        
-        # Prepare features
-        X_numerical = np.array([[features.get(name, 0) for name in feature_names]])
-        X_text = tfidf.transform([test_code])
-        X_combined = np.hstack([X_numerical, X_text.toarray()])
-        
-        # Predict
-        prediction = model.predict(X_combined)[0]
-        probabilities = model.predict_proba(X_combined)[0] if hasattr(model, 'predict_proba') else None
-        
-        print(f"🎯 Predicted category: {prediction}")
-        if probabilities is not None:
-            confidence = max(probabilities)
-            print(f"🎯 Confidence: {confidence:.3f}")
-        
-        return prediction
-    
-    def test_understanding_model(self, test_code: str):
-        """Test the understanding model with sample code."""
-        if 'understanding' not in self.models:
-            try:
-                with open('standalone_understanding_model.pkl', 'rb') as f:
-                    self.models['understanding'] = pickle.load(f)
-            except FileNotFoundError:
-                print("❌ No understanding model found. Train first.")
-                return None
-        
-        model_data = self.models['understanding']
-        examples = model_data['examples']
-        vectorizer = model_data['vectorizer']
-        code_vectors = model_data['code_vectors']
-        
-        # Vectorize test code
-        test_vector = vectorizer.transform([test_code])
-        
-        # Find most similar code
-        from sklearn.metrics.pairwise import cosine_similarity
-        similarities = cosine_similarity(test_vector, code_vectors)[0]
-        best_match_idx = np.argmax(similarities)
-        
-        if similarities[best_match_idx] > 0.1:  # Minimum similarity threshold
-            explanation = examples[best_match_idx][1]
-            similarity = similarities[best_match_idx]
-            print(f"🧠 Explanation: {explanation}")
-            print(f"🎯 Similarity: {similarity:.3f}")
-            return explanation
-        else:
-            print("🧠 No similar code found in training data")
-            return "Code analysis: Unable to provide explanation based on training data."
-
-def main():
-    """Main function for standalone training."""
-    print("🤖 STANDALONE AI TRAINER (No External Downloads)")
-    print("="*60)
-    print("Uses only scikit-learn - no Hugging Face or external models")
-    
-    if not SKLEARN_AVAILABLE:
-        print("❌ Missing dependencies. Install with:")
-        print("   pip install scikit-learn numpy")
-        return
-    
-    # Get corpus path
-    corpus_path = input("📚 Enter path to indexed corpus (.pkl): ").strip()
-    
-    if not os.path.exists(corpus_path):
-        print(f"❌ Corpus not found: {corpus_path}")
-        return
-    
-    # Initialize trainer
-    trainer = StandaloneWireProcessingTrainer(corpus_path)
-    
-    # Training options
-    print(f"\n🎯 Standalone Training Options:")
-    print("1. Train classification model (Random Forest + TF-IDF)")
-    print("2. Train understanding model (Similarity-based)")
-    print("3. Train both models")
-    print("4. Test existing models")
-    
-    choice = input("\nSelect option (1-4): ").strip()
-    
-    if choice == "1":
-        model = trainer.train_classification_model()
-        if model:
-            print("\n🧪 Testing with sample code...")
-            test_code = """
-PROC VALIDATE_SWIFT_MT103(message);
-BEGIN
-    CALL EXTRACT_BIC_CODE(message, bic_field);
-    IF NOT VALIDATE_BIC_FORMAT(bic_field) THEN
-        RETURN 0;
-    END;
-END;
-"""
-            trainer.test_classification_model(test_code)
-    
-    elif choice == "2":
-        model = trainer.train_understanding_model()
-        if model:
-            print("\n🧪 Testing understanding...")
-            test_code = """
-PROC VALIDATE_SWIFT_MT103(message);
-BEGIN
-    CALL EXTRACT_BIC_CODE(message, bic_field);
-END;
-"""
-            trainer.test_understanding_model(test_code)
-    
-    elif choice == "3":
-        print("🚀 Training both models...")
-        trainer.train_classification_model()
-        trainer.train_understanding_model()
-        print("✅ Both models trained!")
-    
-    elif choice == "4":
-        print("🧪 Testing existing models...")
-        test_code = input("Enter TAL code to test: ").strip()
-        if test_code:
-            print("\n🏷️ Classification test:")
-            trainer.test_classification_model(test_code)
-            print("\n🧠 Understanding test:")
-            trainer.test_understanding_model(test_code)
-    
-    else:
-        print("❌ Invalid choice")
-
-if __name__ == "__main__":
-    main()
+                "5.
