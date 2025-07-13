@@ -317,7 +317,441 @@ class StandaloneCorpusDataExtractor:
         
         return '. '.join(explanation_parts) + '.'
 
-class StandaloneWireProcessingTrainer:
+class CodeSnippetGenerator:
+    """Generate TAL code snippets from developer questions."""
+    
+    def __init__(self, corpus_path: str):
+        self.extractor = StandaloneCorpusDataExtractor(corpus_path)
+        self.template_library = {}
+        self.pattern_library = {}
+        self.build_code_libraries()
+    
+    def build_code_libraries(self):
+        """Build libraries of code templates and patterns from corpus."""
+        print("🔧 Building code snippet libraries...")
+        
+        # Organize chunks by semantic category and patterns
+        for chunk in self.extractor.chunks:
+            category = getattr(chunk, 'semantic_category', 'general')
+            
+            # Build template library by category
+            if category not in self.template_library:
+                self.template_library[category] = []
+            
+            # Store clean, reusable code snippets
+            if (chunk.procedure_name and 
+                len(chunk.content.split('\n')) < 30 and  # Not too long
+                len(chunk.content.split('\n')) > 5):     # Not too short
+                
+                template = {
+                    'name': chunk.procedure_name,
+                    'code': self.extract_reusable_code(chunk.content),
+                    'description': self.generate_template_description(chunk),
+                    'keywords': getattr(chunk, 'keywords', []),
+                    'functions': getattr(chunk, 'function_calls', [])
+                }
+                self.template_library[category].append(template)
+        
+        # Build pattern library for common constructs
+        self.build_pattern_library()
+        
+        print(f"✅ Built {len(self.template_library)} category libraries")
+        total_templates = sum(len(templates) for templates in self.template_library.values())
+        print(f"📚 {total_templates} code templates available")
+    
+    def build_pattern_library(self):
+        """Build library of common TAL patterns."""
+        self.pattern_library = {
+            'validation': {
+                'description': 'Validate input data or message format',
+                'template': '''PROC VALIDATE_{TYPE}({param});
+BEGIN
+    ! Validate {type} format and content
+    IF NOT CHECK_{TYPE}_FORMAT({param}) THEN
+        CALL LOG_ERROR("Invalid {type} format");
+        RETURN 0;
+    END;
+    
+    ! Additional validation logic here
+    
+    RETURN 1;
+END;''',
+                'variables': ['{TYPE}', '{param}', '{type}']
+            },
+            
+            'swift_processing': {
+                'description': 'Process SWIFT message',
+                'template': '''PROC PROCESS_SWIFT_{MESSAGE_TYPE}(message_buffer);
+BEGIN
+    STRING bic_field[11];
+    STRING amount_field[15];
+    INT result := 0;
+    
+    ! Extract key fields
+    CALL EXTRACT_BIC_CODE(message_buffer, bic_field);
+    CALL EXTRACT_AMOUNT(message_buffer, amount_field);
+    
+    ! Validate message format
+    IF VALIDATE_SWIFT_FORMAT(message_buffer) THEN
+        ! Process the message
+        result := EXECUTE_SWIFT_PROCESSING(message_buffer);
+    ELSE
+        CALL LOG_SWIFT_ERROR("Invalid format", message_buffer);
+    END;
+    
+    RETURN result;
+END;''',
+                'variables': ['{MESSAGE_TYPE}']
+            },
+            
+            'fedwire_processing': {
+                'description': 'Process Fedwire transaction',
+                'template': '''PROC PROCESS_FEDWIRE_{TYPE}(wire_data);
+BEGIN
+    STRING imad[9];
+    STRING omad[9];
+    INT status := 0;
+    
+    ! Generate IMAD/OMAD
+    CALL GENERATE_IMAD(imad);
+    CALL GENERATE_OMAD(omad);
+    
+    ! Validate Fedwire format
+    IF VALIDATE_FEDWIRE_FORMAT(wire_data) THEN
+        ! Execute wire transfer
+        status := EXECUTE_FEDWIRE_TRANSFER(wire_data, imad, omad);
+    ELSE
+        CALL REJECT_FEDWIRE("Format error", wire_data);
+        status := -1;
+    END;
+    
+    RETURN status;
+END;''',
+                'variables': ['{TYPE}']
+            },
+            
+            'ofac_screening': {
+                'description': 'Screen for OFAC sanctions',
+                'template': '''PROC SCREEN_OFAC_{ENTITY}({entity}_data);
+BEGIN
+    INT match_result := 0;
+    STRING match_info[100];
+    
+    ! Screen against OFAC list
+    match_result := CHECK_OFAC_LIST({entity}_data, match_info);
+    
+    IF match_result > 0 THEN
+        ! OFAC match found - hold transaction
+        CALL HOLD_FOR_OFAC_REVIEW({entity}_data, match_info);
+        CALL LOG_OFAC_HIT({entity}_data, match_result);
+        RETURN 0;  ! Blocked
+    ELSE
+        ! No match - allow processing
+        CALL LOG_OFAC_CLEAR({entity}_data);
+        RETURN 1;  ! Approved
+    END;
+END;''',
+                'variables': ['{ENTITY}', '{entity}']
+            },
+            
+            'error_handling': {
+                'description': 'Handle errors and exceptions',
+                'template': '''PROC HANDLE_{ERROR_TYPE}_ERROR(error_code, error_data);
+BEGIN
+    STRING error_msg[200];
+    INT recovery_action := 0;
+    
+    ! Log the error
+    CALL FORMAT_ERROR_MESSAGE(error_code, error_data, error_msg);
+    CALL LOG_ERROR(error_msg);
+    
+    ! Determine recovery action
+    CASE error_code OF
+        BEGIN
+        1000 TO 1999:  ! Validation errors
+            recovery_action := REPAIR_DATA_ERROR(error_data);
+        2000 TO 2999:  ! Network errors  
+            recovery_action := RETRY_TRANSMISSION(error_data);
+        OTHERWISE:
+            recovery_action := ESCALATE_ERROR(error_code, error_data);
+        END;
+    
+    RETURN recovery_action;
+END;''',
+                'variables': ['{ERROR_TYPE}']
+            },
+            
+            'iso20022_processing': {
+                'description': 'Process ISO 20022 message',
+                'template': '''PROC PROCESS_ISO20022_{MSG_TYPE}(xml_message);
+BEGIN
+    STRING parsed_data[1000];
+    INT validation_result := 0;
+    
+    ! Parse XML message
+    validation_result := PARSE_ISO20022_XML(xml_message, parsed_data);
+    
+    IF validation_result = 1 THEN
+        ! Validate business rules
+        IF VALIDATE_ISO20022_BUSINESS_RULES(parsed_data) THEN
+            ! Process the payment
+            CALL EXECUTE_ISO20022_PAYMENT(parsed_data);
+        ELSE
+            CALL REJECT_ISO20022("Business rule violation", xml_message);
+        END;
+    ELSE
+        CALL REJECT_ISO20022("XML parsing error", xml_message);
+    END;
+END;''',
+                'variables': ['{MSG_TYPE}']
+            }
+        }
+    
+    def generate_code_snippet(self, question: str) -> Dict[str, Any]:
+        """Generate code snippet from developer question."""
+        print(f"🤖 Generating code for: '{question}'")
+        
+        # Analyze the question to determine intent and category
+        intent_analysis = self.analyze_question_intent(question)
+        
+        # Find best matching pattern or template
+        if intent_analysis['pattern_match']:
+            # Use pattern-based generation
+            snippet = self.generate_from_pattern(intent_analysis)
+        else:
+            # Use template-based generation from corpus
+            snippet = self.generate_from_templates(intent_analysis)
+        
+        return {
+            'question': question,
+            'generated_code': snippet['code'],
+            'description': snippet['description'],
+            'category': intent_analysis['category'],
+            'confidence': intent_analysis['confidence'],
+            'suggestions': snippet.get('suggestions', [])
+        }
+    
+    def analyze_question_intent(self, question: str) -> Dict[str, Any]:
+        """Analyze developer question to determine intent."""
+        question_lower = question.lower()
+        
+        # Pattern matching for specific intents
+        intent_patterns = {
+            'validation': ['validate', 'check', 'verify', 'format'],
+            'swift_processing': ['swift', 'mt103', 'mt202', 'bic', 'gpi'],
+            'fedwire_processing': ['fedwire', 'imad', 'omad', 'federal reserve'],
+            'ofac_screening': ['ofac', 'sanctions', 'aml', 'screening', 'watchlist'],
+            'error_handling': ['error', 'exception', 'handle', 'catch', 'recover'],
+            'iso20022_processing': ['iso20022', 'pacs', 'pain', 'camt', 'xml']
+        }
+        
+        # Score each category
+        category_scores = {}
+        for category, keywords in intent_patterns.items():
+            score = sum(1 for keyword in keywords if keyword in question_lower)
+            if score > 0:
+                category_scores[category] = score
+        
+        # Determine best category
+        if category_scores:
+            best_category = max(category_scores, key=category_scores.get)
+            confidence = category_scores[best_category] / len(intent_patterns[best_category])
+            pattern_match = best_category in self.pattern_library
+        else:
+            best_category = 'general'
+            confidence = 0.5
+            pattern_match = False
+        
+        # Extract specific entities (message types, etc.)
+        entities = self.extract_entities_from_question(question)
+        
+        return {
+            'category': best_category,
+            'confidence': confidence,
+            'pattern_match': pattern_match,
+            'entities': entities,
+            'action_type': self.determine_action_type(question_lower)
+        }
+    
+    def extract_entities_from_question(self, question: str) -> Dict[str, str]:
+        """Extract specific entities like message types from question."""
+        entities = {}
+        question_upper = question.upper()
+        
+        # SWIFT message types
+        swift_patterns = ['MT103', 'MT202', 'MT202COV', 'MT199', 'MT299']
+        for pattern in swift_patterns:
+            if pattern in question_upper:
+                entities['swift_message_type'] = pattern
+        
+        # ISO 20022 message types
+        iso_patterns = ['PACS.008', 'PACS.009', 'PAIN.001', 'CAMT.056', 'CAMT.029']
+        for pattern in iso_patterns:
+            if pattern.replace('.', '') in question_upper.replace('.', ''):
+                entities['iso_message_type'] = pattern
+        
+        # Fedwire type codes
+        if 'TYPE CODE' in question_upper or 'TYPECODE' in question_upper:
+            entities['fedwire_type'] = 'TYPE_CODE'
+        
+        return entities
+    
+    def determine_action_type(self, question_lower: str) -> str:
+        """Determine what type of action the developer wants."""
+        if any(word in question_lower for word in ['create', 'generate', 'build', 'make']):
+            return 'create'
+        elif any(word in question_lower for word in ['validate', 'check', 'verify']):
+            return 'validate'
+        elif any(word in question_lower for word in ['process', 'handle', 'execute']):
+            return 'process'
+        elif any(word in question_lower for word in ['screen', 'filter', 'check']):
+            return 'screen'
+        else:
+            return 'general'
+    
+    def generate_from_pattern(self, intent_analysis: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate code using predefined patterns."""
+        category = intent_analysis['category']
+        pattern = self.pattern_library[category]
+        
+        # Customize the template based on entities
+        customized_code = pattern['template']
+        variables = pattern.get('variables', [])
+        
+        # Replace variables with extracted entities or defaults
+        for variable in variables:
+            if variable == '{TYPE}' or variable == '{MESSAGE_TYPE}':
+                if 'swift_message_type' in intent_analysis['entities']:
+                    replacement = intent_analysis['entities']['swift_message_type']
+                elif 'iso_message_type' in intent_analysis['entities']:
+                    replacement = intent_analysis['entities']['iso_message_type'].replace('.', '')
+                else:
+                    replacement = 'GENERIC'
+                customized_code = customized_code.replace(variable, replacement)
+            
+            elif variable == '{type}':
+                # Lowercase version
+                if 'swift_message_type' in intent_analysis['entities']:
+                    replacement = intent_analysis['entities']['swift_message_type'].lower()
+                else:
+                    replacement = 'message'
+                customized_code = customized_code.replace(variable, replacement)
+            
+            elif variable == '{param}':
+                replacement = 'input_data'
+                customized_code = customized_code.replace(variable, replacement)
+            
+            elif variable == '{ENTITY}':
+                replacement = 'CUSTOMER'
+                customized_code = customized_code.replace(variable, replacement)
+            
+            elif variable == '{entity}':
+                replacement = 'customer'
+                customized_code = customized_code.replace(variable, replacement)
+            
+            elif variable == '{ERROR_TYPE}':
+                replacement = 'VALIDATION'
+                customized_code = customized_code.replace(variable, replacement)
+            
+            elif variable == '{MSG_TYPE}':
+                if 'iso_message_type' in intent_analysis['entities']:
+                    replacement = intent_analysis['entities']['iso_message_type'].replace('.', '_')
+                else:
+                    replacement = 'PACS008'
+                customized_code = customized_code.replace(variable, replacement)
+        
+        return {
+            'code': customized_code,
+            'description': pattern['description'],
+            'suggestions': [
+                "Customize the variable names for your specific use case",
+                "Add additional validation logic as needed",
+                "Update error handling for your system's requirements"
+            ]
+        }
+    
+    def generate_from_templates(self, intent_analysis: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate code using corpus templates."""
+        category = intent_analysis['category']
+        
+        # Find templates in this category
+        templates = self.template_library.get(category, [])
+        
+        if not templates:
+            # Fallback to general templates
+            all_templates = []
+            for cat_templates in self.template_library.values():
+                all_templates.extend(cat_templates)
+            templates = all_templates[:5]  # Take first 5 as examples
+        
+        if templates:
+            # Pick the best template (for now, just the first one)
+            best_template = templates[0]
+            
+            return {
+                'code': best_template['code'],
+                'description': f"Based on {best_template['name']}: {best_template['description']}",
+                'suggestions': [
+                    f"This template is based on the procedure: {best_template['name']}",
+                    f"Key functions used: {', '.join(best_template['functions'][:3])}",
+                    "Modify the procedure name and parameters for your needs"
+                ]
+            }
+        else:
+            # Fallback generic template
+            return {
+                'code': '''PROC YOUR_PROCEDURE_NAME(input_parameter);
+BEGIN
+    ! Add your implementation here
+    ! This is a generic template
+    
+    INT result := 0;
+    
+    ! Your code logic
+    
+    RETURN result;
+END;''',
+                'description': "Generic TAL procedure template",
+                'suggestions': [
+                    "Replace YOUR_PROCEDURE_NAME with a meaningful name",
+                    "Add appropriate parameters and return type",
+                    "Implement your specific business logic"
+                ]
+            }
+    
+    def extract_reusable_code(self, content: str) -> str:
+        """Extract clean, reusable code from chunk content."""
+        lines = content.split('\n')
+        cleaned_lines = []
+        
+        for line in lines:
+            stripped = line.strip()
+            # Keep meaningful code lines, remove comments
+            if (stripped and 
+                not stripped.startswith('!') and 
+                not stripped.startswith('//') and
+                len(stripped) > 3):
+                # Remove inline comments
+                if '!' in line:
+                    line = line[:line.index('!')].rstrip()
+                cleaned_lines.append(line)
+        
+        return '\n'.join(cleaned_lines).strip()
+    
+    def generate_template_description(self, chunk) -> str:
+        """Generate description for a code template."""
+        proc_name = chunk.procedure_name or "procedure"
+        category = getattr(chunk, 'semantic_category', 'general')
+        
+        # Generate description based on procedure name and category
+        if 'validate' in proc_name.lower():
+            return f"Validates data for {category.replace('_', ' ')}"
+        elif 'process' in proc_name.lower():
+            return f"Processes {category.replace('_', ' ')}"
+        elif 'screen' in proc_name.lower():
+            return f"Screens for {category.replace('_', ' ')}"
+        else:
+            return f"Handles {category.replace('_', ' ')} functionality"
     """Train models using only scikit-learn - no external downloads."""
     
     def __init__(self, corpus_path: str):
