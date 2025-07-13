@@ -1,21 +1,35 @@
 #!/usr/bin/env python3
 """
-AI Model Trainer for Indexed TAL Wire Processing Code
+Standalone AI Model Trainer for Indexed TAL Code
 
-Trains multiple AI models using your indexed corpus for:
-1. Code understanding and explanation
-2. Semantic search improvement
-3. Wire processing classification
-4. Code generation assistance
+No external model downloads - uses only scikit-learn and built-in libraries.
+Trains lightweight but effective models for wire processing code analysis.
 """
 
 import os
 import json
 import pickle
 import random
+import re
 from typing import List, Dict, Tuple, Any
 from dataclasses import dataclass
-import pandas as pd
+from collections import Counter, defaultdict
+import math
+
+# Only use libraries that don't download external models
+try:
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.model_selection import train_test_split
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.naive_bayes import MultinomialNB
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+    from sklearn.pipeline import Pipeline
+    import numpy as np
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
+    print("❌ Install scikit-learn: pip install scikit-learn numpy")
 
 # Add SimpleChunk class for pickle compatibility
 class SimpleChunk:
@@ -42,43 +56,119 @@ class SimpleChunk:
         self.keywords = []
         self.semantic_category = ""
 
-# ML/AI imports
-try:
-    import torch
-    import torch.nn as nn
-    from torch.utils.data import Dataset, DataLoader
-    from transformers import (
-        AutoTokenizer, AutoModel, AutoModelForSequenceClassification,
-        T5ForConditionalGeneration, T5Tokenizer,
-        TrainingArguments, Trainer
-    )
-    from sklearn.model_selection import train_test_split
-    from sklearn.metrics import accuracy_score, classification_report
-    TRANSFORMERS_AVAILABLE = True
-except ImportError:
-    TRANSFORMERS_AVAILABLE = False
-    print("⚠️  Install transformers: pip install torch transformers scikit-learn")
-
 @dataclass
 class TrainingExample:
     """Training example for various model types."""
     input_text: str
     target_text: str
     metadata: Dict[str, Any]
-    task_type: str  # 'classification', 'generation', 'understanding'
+    task_type: str
 
-class TALCorpusDataExtractor:
-    """Extract training data from your indexed corpus."""
+class WireProcessingFeatureExtractor:
+    """Extract features from TAL code for machine learning."""
+    
+    def __init__(self):
+        # Wire processing specific patterns
+        self.wire_keywords = {
+            'iso20022': ['iso20022', 'pacs', 'pain', 'camt', 'pacs008', 'pacs009', 'xml'],
+            'swift': ['swift', 'mt103', 'mt202', 'gpi', 'uetr', 'bic', 'fin'],
+            'fedwire': ['fedwire', 'imad', 'omad', 'federal', 'reserve', 'typecode'],
+            'chips': ['chips', 'uid', 'netting', 'clearing', 'house'],
+            'compliance': ['ofac', 'sanctions', 'aml', 'kyc', 'screening', 'compliance'],
+            'exception': ['exception', 'error', 'repair', 'investigation', 'return']
+        }
+        
+        # Technical patterns
+        self.technical_patterns = {
+            'validation': r'(?i)\b(validat|verify|check)\w*',
+            'processing': r'(?i)\b(process|handle|execute)\w*',
+            'screening': r'(?i)\b(screen|monitor|detect)\w*',
+            'transmission': r'(?i)\b(send|transmit|forward)\w*'
+        }
+    
+    def extract_features(self, chunk) -> Dict[str, Any]:
+        """Extract comprehensive features from a code chunk."""
+        features = {}
+        content_lower = chunk.content.lower()
+        
+        # Basic metrics
+        features['word_count'] = getattr(chunk, 'word_count', 0)
+        features['char_count'] = getattr(chunk, 'char_count', 0)
+        features['line_count'] = len(chunk.content.split('\n'))
+        
+        # Procedure-based features
+        features['has_procedure'] = 1 if getattr(chunk, 'procedure_name', '') else 0
+        if chunk.procedure_name:
+            proc_name = chunk.procedure_name.lower()
+            features['proc_validate'] = 1 if 'validate' in proc_name else 0
+            features['proc_process'] = 1 if 'process' in proc_name else 0
+            features['proc_screen'] = 1 if 'screen' in proc_name else 0
+            features['proc_send'] = 1 if 'send' in proc_name or 'transmit' in proc_name else 0
+        else:
+            features['proc_validate'] = 0
+            features['proc_process'] = 0
+            features['proc_screen'] = 0
+            features['proc_send'] = 0
+        
+        # Wire processing domain features
+        for domain, keywords in self.wire_keywords.items():
+            count = sum(1 for keyword in keywords if keyword in content_lower)
+            features[f'wire_{domain}_count'] = count
+            features[f'wire_{domain}_present'] = 1 if count > 0 else 0
+        
+        # Technical pattern features
+        for pattern_name, pattern in self.technical_patterns.items():
+            matches = len(re.findall(pattern, chunk.content))
+            features[f'pattern_{pattern_name}'] = matches
+        
+        # Function call features
+        function_calls = getattr(chunk, 'function_calls', [])
+        features['function_count'] = len(function_calls)
+        features['has_functions'] = 1 if function_calls else 0
+        
+        # Common wire processing function patterns
+        wire_functions = ['validate', 'process', 'send', 'receive', 'screen', 'check']
+        for func_pattern in wire_functions:
+            count = sum(1 for func in function_calls if func_pattern in func.lower())
+            features[f'func_{func_pattern}'] = count
+        
+        # Variable declaration features
+        var_declarations = getattr(chunk, 'variable_declarations', [])
+        features['variable_count'] = len(var_declarations)
+        
+        # Control structure features
+        control_structures = getattr(chunk, 'control_structures', [])
+        features['control_count'] = len(control_structures)
+        features['has_if'] = 1 if 'if' in control_structures else 0
+        features['has_while'] = 1 if 'while' in control_structures else 0
+        features['has_for'] = 1 if 'for' in control_structures else 0
+        
+        # Keyword density features
+        keywords = getattr(chunk, 'keywords', [])
+        if keywords:
+            wire_keyword_count = sum(1 for kw in keywords 
+                                   if any(wire_kw in kw.lower() 
+                                         for wire_kws in self.wire_keywords.values() 
+                                         for wire_kw in wire_kws))
+            features['wire_keyword_density'] = wire_keyword_count / len(keywords)
+        else:
+            features['wire_keyword_density'] = 0
+        
+        return features
+
+class StandaloneCorpusDataExtractor:
+    """Extract training data using only built-in libraries."""
     
     def __init__(self, corpus_path: str):
         self.corpus_path = corpus_path
         self.chunks = []
         self.vectorizer_data = {}
         self.functionality_groups = {}
+        self.feature_extractor = WireProcessingFeatureExtractor()
         self.load_corpus()
     
     def load_corpus(self):
-        """Load your indexed corpus."""
+        """Load indexed corpus with error handling."""
         print(f"📚 Loading indexed corpus from: {self.corpus_path}")
         
         # Add SimpleChunk to global namespace for pickle compatibility
@@ -86,192 +176,113 @@ class TALCorpusDataExtractor:
         globals()['SimpleChunk'] = SimpleChunk
         sys.modules[__name__].SimpleChunk = SimpleChunk
         
-        with open(self.corpus_path, 'rb') as f:
-            corpus_data = pickle.load(f)
-        
-        # Reconstruct chunks with error handling
-        for i, chunk_data in enumerate(corpus_data.get('chunks', [])):
-            try:
-                # Handle both object and dictionary formats
-                if hasattr(chunk_data, '__dict__'):
-                    # It's already a SimpleChunk object
-                    chunk = chunk_data
-                else:
-                    # It's a dictionary, create a simple object
-                    chunk = type('Chunk', (), {})()
-                    for key, value in chunk_data.items():
-                        setattr(chunk, key, value)
-                
-                # Ensure required attributes exist
-                if not hasattr(chunk, 'semantic_category'):
-                    chunk.semantic_category = 'general_processing'
-                if not hasattr(chunk, 'keywords'):
-                    chunk.keywords = []
-                if not hasattr(chunk, 'function_calls'):
-                    chunk.function_calls = []
-                
-                self.chunks.append(chunk)
-                
-            except Exception as e:
-                print(f"⚠️  Warning: Error loading chunk {i}: {e}")
-                continue
-        
-        self.vectorizer_data = corpus_data.get('vectorizer', {})
-        self.functionality_groups = corpus_data.get('functionality_groups', {})
-        
-        print(f"✅ Loaded {len(self.chunks)} chunks with rich metadata")
+        try:
+            with open(self.corpus_path, 'rb') as f:
+                corpus_data = pickle.load(f)
+            
+            # Reconstruct chunks with error handling
+            for i, chunk_data in enumerate(corpus_data.get('chunks', [])):
+                try:
+                    # Handle both object and dictionary formats
+                    if hasattr(chunk_data, '__dict__'):
+                        chunk = chunk_data
+                    else:
+                        chunk = type('Chunk', (), {})()
+                        for key, value in chunk_data.items():
+                            setattr(chunk, key, value)
+                    
+                    # Ensure required attributes exist
+                    if not hasattr(chunk, 'semantic_category'):
+                        chunk.semantic_category = 'general_processing'
+                    if not hasattr(chunk, 'keywords'):
+                        chunk.keywords = []
+                    if not hasattr(chunk, 'function_calls'):
+                        chunk.function_calls = []
+                    
+                    self.chunks.append(chunk)
+                    
+                except Exception as e:
+                    print(f"⚠️  Warning: Error loading chunk {i}: {e}")
+                    continue
+            
+            self.vectorizer_data = corpus_data.get('vectorizer', {})
+            self.functionality_groups = corpus_data.get('functionality_groups', {})
+            
+            print(f"✅ Loaded {len(self.chunks)} chunks with rich metadata")
+            
+        except Exception as e:
+            print(f"❌ Error loading corpus: {e}")
+            raise
     
-    def create_classification_dataset(self) -> List[TrainingExample]:
-        """Create dataset for wire processing classification."""
-        examples = []
+    def create_classification_dataset(self) -> Tuple[List[Dict], List[str], List[Dict]]:
+        """Create feature vectors and labels for classification."""
+        features_list = []
+        labels = []
+        metadata_list = []
+        
+        print("🔧 Extracting features for classification...")
         
         for chunk in self.chunks:
             if hasattr(chunk, 'semantic_category') and chunk.semantic_category:
-                # Clean and prepare code text
-                code_text = self.clean_code_for_training(chunk.content)
+                # Extract features
+                features = self.feature_extractor.extract_features(chunk)
                 
-                # Add context from metadata
-                context = f"Procedure: {chunk.procedure_name or 'None'}\n"
-                if hasattr(chunk, 'keywords'):
-                    context += f"Keywords: {', '.join(chunk.keywords[:5])}\n"
-                if hasattr(chunk, 'function_calls'):
-                    context += f"Functions: {', '.join(chunk.function_calls[:3])}\n"
+                # Add text content for TF-IDF
+                features['content'] = self.clean_code_for_training(chunk.content)
                 
-                input_text = context + "Code:\n" + code_text
+                features_list.append(features)
+                labels.append(chunk.semantic_category)
                 
-                example = TrainingExample(
-                    input_text=input_text,
-                    target_text=chunk.semantic_category,
-                    metadata={
-                        'file': chunk.source_file,
-                        'procedure': chunk.procedure_name,
-                        'topic_prob': getattr(chunk, 'dominant_topic_prob', 0.0)
-                    },
-                    task_type='classification'
-                )
-                examples.append(example)
+                metadata_list.append({
+                    'file': chunk.source_file,
+                    'procedure': getattr(chunk, 'procedure_name', ''),
+                    'topic_prob': getattr(chunk, 'dominant_topic_prob', 0.0)
+                })
         
-        print(f"📊 Created {len(examples)} classification examples")
-        return examples
+        print(f"📊 Created {len(features_list)} feature vectors")
+        return features_list, labels, metadata_list
     
-    def create_understanding_dataset(self) -> List[TrainingExample]:
-        """Create dataset for code understanding (code -> explanation)."""
+    def create_understanding_dataset(self) -> List[Tuple[str, str]]:
+        """Create simple rule-based code explanations."""
         examples = []
+        
+        print("🧠 Creating understanding examples...")
         
         for chunk in self.chunks:
             if (hasattr(chunk, 'keywords') and chunk.keywords and 
                 hasattr(chunk, 'semantic_category')):
                 
                 code_text = self.clean_code_for_training(chunk.content)
+                explanation = self.generate_rule_based_explanation(chunk)
                 
-                # Generate explanation from metadata
-                explanation = self.generate_code_explanation(chunk)
-                
-                example = TrainingExample(
-                    input_text=f"Explain this TAL wire processing code:\n{code_text}",
-                    target_text=explanation,
-                    metadata={
-                        'category': chunk.semantic_category,
-                        'complexity': len(chunk.content.split('\n'))
-                    },
-                    task_type='understanding'
-                )
-                examples.append(example)
+                examples.append((code_text, explanation))
         
         print(f"🧠 Created {len(examples)} understanding examples")
         return examples
     
-    def create_search_improvement_dataset(self) -> List[TrainingExample]:
-        """Create dataset for improving semantic search."""
-        examples = []
-        
-        # Group chunks by semantic category
-        category_groups = {}
-        for chunk in self.chunks:
-            if hasattr(chunk, 'semantic_category'):
-                category = chunk.semantic_category
-                if category not in category_groups:
-                    category_groups[category] = []
-                category_groups[category].append(chunk)
-        
-        # Create search query -> relevant code examples
-        for category, chunks in category_groups.items():
-            if len(chunks) >= 3:  # Need multiple examples
-                
-                # Generate queries for this category
-                queries = self.generate_category_queries(category, chunks[0])
-                
-                for query in queries:
-                    # Pick a relevant chunk
-                    relevant_chunk = random.choice(chunks)
-                    code_text = self.clean_code_for_training(relevant_chunk.content)
-                    
-                    example = TrainingExample(
-                        input_text=f"Query: {query}\nCode: {code_text}",
-                        target_text="relevant",  # Binary relevance
-                        metadata={
-                            'query': query,
-                            'category': category,
-                            'procedure': relevant_chunk.procedure_name
-                        },
-                        task_type='search'
-                    )
-                    examples.append(example)
-        
-        print(f"🔍 Created {len(examples)} search improvement examples")
-        return examples
-    
-    def create_code_generation_dataset(self) -> List[TrainingExample]:
-        """Create dataset for code generation."""
-        examples = []
-        
-        for chunk in self.chunks:
-            if (chunk.procedure_name and 
-                hasattr(chunk, 'semantic_category') and
-                len(chunk.content.split('\n')) < 50):  # Focus on smaller, clearer procedures
-                
-                # Generate requirement from procedure name and category
-                requirement = self.generate_requirement_from_procedure(chunk)
-                code_text = self.clean_code_for_training(chunk.content)
-                
-                example = TrainingExample(
-                    input_text=f"Generate TAL code for: {requirement}",
-                    target_text=code_text,
-                    metadata={
-                        'category': chunk.semantic_category,
-                        'original_procedure': chunk.procedure_name
-                    },
-                    task_type='generation'
-                )
-                examples.append(example)
-        
-        print(f"⚡ Created {len(examples)} generation examples")
-        return examples
-    
     def clean_code_for_training(self, code: str) -> str:
-        """Clean code for training (remove comments, normalize whitespace)."""
+        """Clean code for training."""
         lines = code.split('\n')
         cleaned_lines = []
         
         for line in lines:
-            # Remove full-line comments
             stripped = line.strip()
             if stripped and not stripped.startswith('!') and not stripped.startswith('//'):
-                # Remove inline comments
                 if '!' in line:
                     line = line[:line.index('!')].rstrip()
-                cleaned_lines.append(line)
+                if line.strip():
+                    cleaned_lines.append(line)
         
         return '\n'.join(cleaned_lines).strip()
     
-    def generate_code_explanation(self, chunk) -> str:
-        """Generate explanation from chunk metadata."""
+    def generate_rule_based_explanation(self, chunk) -> str:
+        """Generate explanation using rules instead of AI."""
         explanation_parts = []
         
         # Category-based explanation
         category_explanations = {
             'iso20022_messages': 'This code processes ISO 20022 payment messages',
-            'swift_processing': 'This code handles SWIFT message processing',
+            'swift_processing': 'This code handles SWIFT message processing', 
             'fedwire_operations': 'This code manages Fedwire operations',
             'chips_processing': 'This code handles CHIPS processing',
             'compliance_screening': 'This code performs compliance and screening functions',
@@ -280,348 +291,283 @@ class TALCorpusDataExtractor:
         
         if hasattr(chunk, 'semantic_category'):
             base_explanation = category_explanations.get(
-                chunk.semantic_category, 
+                chunk.semantic_category,
                 f"This code implements {chunk.semantic_category.replace('_', ' ')}"
             )
             explanation_parts.append(base_explanation)
         
-        # Add procedure-specific info
-        if chunk.procedure_name:
-            explanation_parts.append(f"The procedure '{chunk.procedure_name}' ")
-            
-            # Infer purpose from name
-            name_lower = chunk.procedure_name.lower()
-            if 'validate' in name_lower:
-                explanation_parts.append("validates input data and formats")
-            elif 'process' in name_lower:
-                explanation_parts.append("processes payment transactions")
-            elif 'screen' in name_lower:
-                explanation_parts.append("screens transactions for compliance")
-            elif 'send' in name_lower or 'transmit' in name_lower:
-                explanation_parts.append("transmits payment messages")
+        # Procedure-based explanation
+        if getattr(chunk, 'procedure_name', ''):
+            proc_name = chunk.procedure_name.lower()
+            if 'validate' in proc_name:
+                explanation_parts.append("It validates input data and message formats")
+            elif 'process' in proc_name:
+                explanation_parts.append("It processes payment transactions")
+            elif 'screen' in proc_name:
+                explanation_parts.append("It screens transactions for compliance")
+            elif 'send' in proc_name or 'transmit' in proc_name:
+                explanation_parts.append("It transmits payment messages")
         
-        # Add technical details
-        if hasattr(chunk, 'function_calls') and chunk.function_calls:
-            key_functions = [f for f in chunk.function_calls[:3] if len(f) > 3]
+        # Function-based explanation
+        function_calls = getattr(chunk, 'function_calls', [])
+        if function_calls:
+            key_functions = [f for f in function_calls[:3] if len(f) > 3]
             if key_functions:
-                explanation_parts.append(f"It calls functions like {', '.join(key_functions)}")
-        
-        # Add keywords context
-        if hasattr(chunk, 'keywords') and chunk.keywords:
-            wire_keywords = [k for k in chunk.keywords if k.lower() in 
-                           {'wire', 'payment', 'swift', 'fedwire', 'chips', 'iso20022', 
-                            'pacs', 'mt103', 'ofac', 'sanctions', 'aml'}]
-            if wire_keywords:
-                explanation_parts.append(f"Key concepts include: {', '.join(wire_keywords[:3])}")
+                explanation_parts.append(f"Key functions include: {', '.join(key_functions)}")
         
         return '. '.join(explanation_parts) + '.'
-    
-    def generate_category_queries(self, category: str, sample_chunk) -> List[str]:
-        """Generate search queries for a semantic category."""
-        category_queries = {
-            'iso20022_messages': [
-                'ISO 20022 message processing',
-                'pacs.008 credit transfer',
-                'pain.001 payment initiation',
-                'XML message validation'
-            ],
-            'swift_processing': [
-                'SWIFT MT103 processing',
-                'MT202 bank transfer',
-                'SWIFT gpi tracking',
-                'BIC validation'
-            ],
-            'fedwire_operations': [
-                'Fedwire funds transfer',
-                'IMAD generation',
-                'Federal Reserve wire',
-                'type code processing'
-            ],
-            'compliance_screening': [
-                'OFAC sanctions screening',
-                'AML compliance check',
-                'KYC validation',
-                'watchlist screening'
-            ]
-        }
-        
-        queries = category_queries.get(category, [f"{category.replace('_', ' ')} processing"])
-        
-        # Add procedure-specific queries
-        if sample_chunk.procedure_name:
-            proc_words = sample_chunk.procedure_name.lower().replace('_', ' ')
-            queries.append(proc_words)
-        
-        return queries[:3]  # Limit to 3 queries per category
-    
-    def generate_requirement_from_procedure(self, chunk) -> str:
-        """Generate a requirement description from procedure metadata."""
-        proc_name = chunk.procedure_name.lower()
-        category = getattr(chunk, 'semantic_category', '')
-        
-        # Map procedure patterns to requirements
-        if 'validate' in proc_name:
-            if 'swift' in proc_name or 'mt103' in proc_name:
-                return "Validate SWIFT MT103 message format and required fields"
-            elif 'iso' in proc_name or 'pacs' in proc_name:
-                return "Validate ISO 20022 payment message structure"
-            else:
-                return "Validate payment message format and content"
-        
-        elif 'process' in proc_name:
-            if 'fedwire' in proc_name:
-                return "Process Fedwire funds transfer request"
-            elif 'chips' in proc_name:
-                return "Process CHIPS clearing and settlement"
-            else:
-                return "Process payment transaction"
-        
-        elif 'screen' in proc_name:
-            return "Screen payment for OFAC sanctions and AML compliance"
-        
-        elif 'send' in proc_name or 'transmit' in proc_name:
-            return "Send payment message to destination system"
-        
-        else:
-            # Fallback: use category
-            category_requirements = {
-                'iso20022_messages': "Handle ISO 20022 message processing",
-                'swift_processing': "Process SWIFT message",
-                'fedwire_operations': "Execute Fedwire operation",
-                'compliance_screening': "Perform compliance screening"
-            }
-            return category_requirements.get(category, f"Implement {proc_name.replace('_', ' ')}")
 
-class WireProcessingModelTrainer:
-    """Train various AI models on your indexed data."""
+class StandaloneWireProcessingTrainer:
+    """Train models using only scikit-learn - no external downloads."""
     
     def __init__(self, corpus_path: str):
-        self.extractor = TALCorpusDataExtractor(corpus_path)
+        if not SKLEARN_AVAILABLE:
+            raise ImportError("scikit-learn is required. Install with: pip install scikit-learn numpy")
+        
+        self.extractor = StandaloneCorpusDataExtractor(corpus_path)
         self.models = {}
-        
+        self.vectorizers = {}
+    
     def train_classification_model(self):
-        """Train a model to classify wire processing code."""
-        if not TRANSFORMERS_AVAILABLE:
-            print("❌ Transformers not available")
-            return None
-        
-        print("🏗️ Training wire processing classification model...")
+        """Train classification model using Random Forest."""
+        print("🏗️ Training wire processing classification model (standalone)...")
         
         # Get training data
-        examples = self.extractor.create_classification_dataset()
+        features_list, labels, metadata_list = self.extractor.create_classification_dataset()
         
-        # Get unique categories
-        categories = list(set(ex.target_text for ex in examples))
-        category_to_id = {cat: idx for idx, cat in enumerate(categories)}
-        
-        # Prepare data
-        texts = [ex.input_text for ex in examples]
-        labels = [category_to_id[ex.target_text] for ex in examples]
-        
-        # Split data
-        train_texts, val_texts, train_labels, val_labels = train_test_split(
-            texts, labels, test_size=0.2, random_state=42
-        )
-        
-        # Initialize model
-        model_name = "microsoft/codebert-base"
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModelForSequenceClassification.from_pretrained(
-            model_name, 
-            num_labels=len(categories)
-        )
-        
-        # Create dataset
-        class ClassificationDataset(Dataset):
-            def __init__(self, texts, labels, tokenizer, max_length=512):
-                self.texts = texts
-                self.labels = labels
-                self.tokenizer = tokenizer
-                self.max_length = max_length
-            
-            def __len__(self):
-                return len(self.texts)
-            
-            def __getitem__(self, idx):
-                encoding = self.tokenizer(
-                    self.texts[idx],
-                    truncation=True,
-                    padding='max_length',
-                    max_length=self.max_length,
-                    return_tensors='pt'
-                )
-                return {
-                    'input_ids': encoding['input_ids'].flatten(),
-                    'attention_mask': encoding['attention_mask'].flatten(),
-                    'labels': torch.tensor(self.labels[idx], dtype=torch.long)
-                }
-        
-        train_dataset = ClassificationDataset(train_texts, train_labels, tokenizer)
-        val_dataset = ClassificationDataset(val_texts, val_labels, tokenizer)
-        
-        # Training arguments
-        training_args = TrainingArguments(
-            output_dir='./wire_classification_model',
-            num_train_epochs=3,
-            per_device_train_batch_size=8,
-            per_device_eval_batch_size=8,
-            warmup_steps=100,
-            weight_decay=0.01,
-            logging_dir='./logs',
-            evaluation_strategy="epoch",
-            save_strategy="epoch",
-            load_best_model_at_end=True,
-        )
-        
-        # Train
-        trainer = Trainer(
-            model=model,
-            args=training_args,
-            train_dataset=train_dataset,
-            eval_dataset=val_dataset,
-            tokenizer=tokenizer,
-        )
-        
-        trainer.train()
-        
-        # Save model
-        model.save_pretrained('./wire_classification_model')
-        tokenizer.save_pretrained('./wire_classification_model')
-        
-        # Save category mapping
-        with open('./wire_classification_model/categories.json', 'w') as f:
-            json.dump(categories, f)
-        
-        print("✅ Classification model trained and saved!")
-        return model, tokenizer, categories
-    
-    def train_understanding_model(self):
-        """Train a model to explain TAL code."""
-        if not TRANSFORMERS_AVAILABLE:
-            print("❌ Transformers not available")
+        if not features_list:
+            print("❌ No training data available")
             return None
         
-        print("🧠 Training code understanding model...")
+        # Analyze label distribution
+        label_counts = Counter(labels)
+        print(f"📊 Label distribution:")
+        for label, count in label_counts.most_common():
+            print(f"   {label}: {count} examples")
+        
+        # Prepare text features for TF-IDF
+        text_content = [features['content'] for features in features_list]
+        
+        # Remove content from feature dictionaries (will be handled by TF-IDF)
+        numerical_features = []
+        for features in features_list:
+            num_features = {k: v for k, v in features.items() if k != 'content'}
+            numerical_features.append(num_features)
+        
+        # Convert to arrays
+        feature_names = list(numerical_features[0].keys())
+        X_numerical = np.array([[features[name] for name in feature_names] 
+                               for features in numerical_features])
+        
+        # Create TF-IDF features
+        tfidf = TfidfVectorizer(max_features=500, stop_words='english', 
+                               ngram_range=(1, 2), min_df=2, max_df=0.8)
+        X_text = tfidf.fit_transform(text_content)
+        
+        # Combine numerical and text features
+        X_combined = np.hstack([X_numerical, X_text.toarray()])
+        y = np.array(labels)
+        
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(
+            X_combined, y, test_size=0.2, random_state=42, stratify=y
+        )
+        
+        print(f"📊 Training set: {len(X_train)} examples")
+        print(f"📊 Test set: {len(X_test)} examples")
+        
+        # Train multiple models and pick the best
+        models_to_try = {
+            'Random Forest': RandomForestClassifier(n_estimators=100, random_state=42),
+            'Logistic Regression': LogisticRegression(random_state=42, max_iter=1000),
+            'Naive Bayes': MultinomialNB(alpha=0.1)
+        }
+        
+        best_model = None
+        best_score = 0
+        best_name = ""
+        
+        for name, model in models_to_try.items():
+            print(f"\n🔧 Training {name}...")
+            
+            try:
+                model.fit(X_train, y_train)
+                
+                # Evaluate
+                train_score = model.score(X_train, y_train)
+                test_score = model.score(X_test, y_test)
+                
+                print(f"   Training accuracy: {train_score:.3f}")
+                print(f"   Test accuracy: {test_score:.3f}")
+                
+                if test_score > best_score:
+                    best_score = test_score
+                    best_model = model
+                    best_name = name
+                    
+            except Exception as e:
+                print(f"   ❌ Error training {name}: {e}")
+        
+        if best_model is None:
+            print("❌ No models trained successfully")
+            return None
+        
+        print(f"\n✅ Best model: {best_name} (accuracy: {best_score:.3f})")
+        
+        # Detailed evaluation of best model
+        y_pred = best_model.predict(X_test)
+        
+        print(f"\n📊 Detailed Classification Report:")
+        print(classification_report(y_test, y_pred))
+        
+        # Feature importance (if available)
+        if hasattr(best_model, 'feature_importances_'):
+            print(f"\n🔍 Top Features:")
+            feature_importance = best_model.feature_importances_
+            
+            # Combine feature names
+            all_feature_names = feature_names + [f"tfidf_{i}" for i in range(X_text.shape[1])]
+            
+            # Get top features
+            top_indices = np.argsort(feature_importance)[-10:][::-1]
+            for idx in top_indices:
+                if idx < len(all_feature_names):
+                    print(f"   {all_feature_names[idx]}: {feature_importance[idx]:.3f}")
+        
+        # Save model and metadata
+        model_data = {
+            'model': best_model,
+            'tfidf_vectorizer': tfidf,
+            'feature_names': feature_names,
+            'label_names': list(set(labels)),
+            'model_type': best_name,
+            'accuracy': best_score
+        }
+        
+        with open('standalone_classification_model.pkl', 'wb') as f:
+            pickle.dump(model_data, f)
+        
+        print(f"✅ Model saved to: standalone_classification_model.pkl")
+        
+        self.models['classification'] = model_data
+        return model_data
+    
+    def train_understanding_model(self):
+        """Train simple understanding model using similarity matching."""
+        print("🧠 Training understanding model (rule-based)...")
         
         examples = self.extractor.create_understanding_dataset()
         
-        # Use T5 for text generation
-        model_name = "t5-small"
-        tokenizer = T5Tokenizer.from_pretrained(model_name)
-        model = T5ForConditionalGeneration.from_pretrained(model_name)
+        if not examples:
+            print("❌ No understanding examples available")
+            return None
         
-        # Prepare data
-        inputs = [ex.input_text for ex in examples]
-        targets = [ex.target_text for ex in examples]
+        # Create a simple similarity-based understanding system
+        understanding_data = {
+            'examples': examples,
+            'vectorizer': TfidfVectorizer(max_features=200, stop_words='english')
+        }
         
-        train_inputs, val_inputs, train_targets, val_targets = train_test_split(
-            inputs, targets, test_size=0.2, random_state=42
-        )
+        # Fit vectorizer on code examples
+        code_texts = [example[0] for example in examples]
+        understanding_data['code_vectors'] = understanding_data['vectorizer'].fit_transform(code_texts)
         
-        class UnderstandingDataset(Dataset):
-            def __init__(self, inputs, targets, tokenizer, max_length=512):
-                self.inputs = inputs
-                self.targets = targets
-                self.tokenizer = tokenizer
-                self.max_length = max_length
-            
-            def __len__(self):
-                return len(self.inputs)
-            
-            def __getitem__(self, idx):
-                input_encoding = self.tokenizer(
-                    self.inputs[idx],
-                    truncation=True,
-                    padding='max_length',
-                    max_length=self.max_length,
-                    return_tensors='pt'
-                )
-                
-                target_encoding = self.tokenizer(
-                    self.targets[idx],
-                    truncation=True,
-                    padding='max_length',
-                    max_length=128,
-                    return_tensors='pt'
-                )
-                
-                return {
-                    'input_ids': input_encoding['input_ids'].flatten(),
-                    'attention_mask': input_encoding['attention_mask'].flatten(),
-                    'labels': target_encoding['input_ids'].flatten()
-                }
+        # Save understanding model
+        with open('standalone_understanding_model.pkl', 'wb') as f:
+            pickle.dump(understanding_data, f)
         
-        train_dataset = UnderstandingDataset(train_inputs, train_targets, tokenizer)
-        val_dataset = UnderstandingDataset(val_inputs, val_targets, tokenizer)
+        print(f"✅ Understanding model saved: standalone_understanding_model.pkl")
+        print(f"📊 {len(examples)} code-explanation pairs indexed")
         
-        # Training
-        training_args = TrainingArguments(
-            output_dir='./wire_understanding_model',
-            num_train_epochs=3,
-            per_device_train_batch_size=4,
-            per_device_eval_batch_size=4,
-            warmup_steps=100,
-            weight_decay=0.01,
-            logging_dir='./logs',
-            evaluation_strategy="epoch",
-            save_strategy="epoch",
-        )
-        
-        trainer = Trainer(
-            model=model,
-            args=training_args,
-            train_dataset=train_dataset,
-            eval_dataset=val_dataset,
-            tokenizer=tokenizer,
-        )
-        
-        trainer.train()
-        
-        model.save_pretrained('./wire_understanding_model')
-        tokenizer.save_pretrained('./wire_understanding_model')
-        
-        print("✅ Understanding model trained and saved!")
-        return model, tokenizer
+        self.models['understanding'] = understanding_data
+        return understanding_data
     
-    def generate_training_report(self):
-        """Generate a comprehensive training report."""
-        print("\n📊 TRAINING DATA ANALYSIS")
-        print("="*50)
+    def test_classification_model(self, test_code: str):
+        """Test the classification model with sample code."""
+        if 'classification' not in self.models:
+            try:
+                with open('standalone_classification_model.pkl', 'rb') as f:
+                    self.models['classification'] = pickle.load(f)
+            except FileNotFoundError:
+                print("❌ No classification model found. Train first.")
+                return None
         
-        # Classification data
-        class_examples = self.extractor.create_classification_dataset()
-        categories = {}
-        for ex in class_examples:
-            cat = ex.target_text
-            categories[cat] = categories.get(cat, 0) + 1
+        model_data = self.models['classification']
+        model = model_data['model']
+        tfidf = model_data['tfidf_vectorizer']
+        feature_names = model_data['feature_names']
+        label_names = model_data['label_names']
         
-        print(f"🏷️ Classification Examples: {len(class_examples)}")
-        print("   Categories:")
-        for cat, count in sorted(categories.items(), key=lambda x: x[1], reverse=True):
-            print(f"     {cat}: {count} examples")
+        # Create a dummy chunk for feature extraction
+        test_chunk = type('TestChunk', (), {})()
+        test_chunk.content = test_code
+        test_chunk.procedure_name = ""
+        test_chunk.keywords = []
+        test_chunk.function_calls = []
+        test_chunk.word_count = len(test_code.split())
+        test_chunk.char_count = len(test_code)
         
-        # Understanding data
-        understand_examples = self.extractor.create_understanding_dataset()
-        print(f"\n🧠 Understanding Examples: {len(understand_examples)}")
+        # Extract features
+        features = self.extractor.feature_extractor.extract_features(test_chunk)
         
-        # Search data
-        search_examples = self.extractor.create_search_improvement_dataset()
-        print(f"🔍 Search Improvement Examples: {len(search_examples)}")
+        # Prepare features
+        X_numerical = np.array([[features.get(name, 0) for name in feature_names]])
+        X_text = tfidf.transform([test_code])
+        X_combined = np.hstack([X_numerical, X_text.toarray()])
         
-        # Generation data
-        gen_examples = self.extractor.create_code_generation_dataset()
-        print(f"⚡ Code Generation Examples: {len(gen_examples)}")
+        # Predict
+        prediction = model.predict(X_combined)[0]
+        probabilities = model.predict_proba(X_combined)[0] if hasattr(model, 'predict_proba') else None
         
-        print(f"\n✅ Total Training Examples: {len(class_examples) + len(understand_examples) + len(search_examples) + len(gen_examples)}")
+        print(f"🎯 Predicted category: {prediction}")
+        if probabilities is not None:
+            confidence = max(probabilities)
+            print(f"🎯 Confidence: {confidence:.3f}")
+        
+        return prediction
+    
+    def test_understanding_model(self, test_code: str):
+        """Test the understanding model with sample code."""
+        if 'understanding' not in self.models:
+            try:
+                with open('standalone_understanding_model.pkl', 'rb') as f:
+                    self.models['understanding'] = pickle.load(f)
+            except FileNotFoundError:
+                print("❌ No understanding model found. Train first.")
+                return None
+        
+        model_data = self.models['understanding']
+        examples = model_data['examples']
+        vectorizer = model_data['vectorizer']
+        code_vectors = model_data['code_vectors']
+        
+        # Vectorize test code
+        test_vector = vectorizer.transform([test_code])
+        
+        # Find most similar code
+        from sklearn.metrics.pairwise import cosine_similarity
+        similarities = cosine_similarity(test_vector, code_vectors)[0]
+        best_match_idx = np.argmax(similarities)
+        
+        if similarities[best_match_idx] > 0.1:  # Minimum similarity threshold
+            explanation = examples[best_match_idx][1]
+            similarity = similarities[best_match_idx]
+            print(f"🧠 Explanation: {explanation}")
+            print(f"🎯 Similarity: {similarity:.3f}")
+            return explanation
+        else:
+            print("🧠 No similar code found in training data")
+            return "Code analysis: Unable to provide explanation based on training data."
 
 def main():
-    """Main training function."""
-    print("🤖 AI MODEL TRAINER FOR INDEXED TAL CODE")
+    """Main function for standalone training."""
+    print("🤖 STANDALONE AI TRAINER (No External Downloads)")
     print("="*60)
+    print("Uses only scikit-learn - no Hugging Face or external models")
     
-    if not TRANSFORMERS_AVAILABLE:
+    if not SKLEARN_AVAILABLE:
         print("❌ Missing dependencies. Install with:")
-        print("   pip install torch transformers scikit-learn")
+        print("   pip install scikit-learn numpy")
         return
     
     # Get corpus path
@@ -632,30 +578,59 @@ def main():
         return
     
     # Initialize trainer
-    trainer = WireProcessingModelTrainer(corpus_path)
-    
-    # Generate report
-    trainer.generate_training_report()
+    trainer = StandaloneWireProcessingTrainer(corpus_path)
     
     # Training options
-    print(f"\n🎯 Training Options:")
-    print("1. Train classification model (categorize code by wire processing type)")
-    print("2. Train understanding model (explain what code does)")
+    print(f"\n🎯 Standalone Training Options:")
+    print("1. Train classification model (Random Forest + TF-IDF)")
+    print("2. Train understanding model (Similarity-based)")
     print("3. Train both models")
-    print("4. Just analyze training data")
+    print("4. Test existing models")
     
     choice = input("\nSelect option (1-4): ").strip()
     
     if choice == "1":
-        trainer.train_classification_model()
+        model = trainer.train_classification_model()
+        if model:
+            print("\n🧪 Testing with sample code...")
+            test_code = """
+PROC VALIDATE_SWIFT_MT103(message);
+BEGIN
+    CALL EXTRACT_BIC_CODE(message, bic_field);
+    IF NOT VALIDATE_BIC_FORMAT(bic_field) THEN
+        RETURN 0;
+    END;
+END;
+"""
+            trainer.test_classification_model(test_code)
+    
     elif choice == "2":
-        trainer.train_understanding_model()
+        model = trainer.train_understanding_model()
+        if model:
+            print("\n🧪 Testing understanding...")
+            test_code = """
+PROC VALIDATE_SWIFT_MT103(message);
+BEGIN
+    CALL EXTRACT_BIC_CODE(message, bic_field);
+END;
+"""
+            trainer.test_understanding_model(test_code)
+    
     elif choice == "3":
         print("🚀 Training both models...")
         trainer.train_classification_model()
         trainer.train_understanding_model()
+        print("✅ Both models trained!")
+    
     elif choice == "4":
-        print("📊 Training data analysis complete!")
+        print("🧪 Testing existing models...")
+        test_code = input("Enter TAL code to test: ").strip()
+        if test_code:
+            print("\n🏷️ Classification test:")
+            trainer.test_classification_model(test_code)
+            print("\n🧠 Understanding test:")
+            trainer.test_understanding_model(test_code)
+    
     else:
         print("❌ Invalid choice")
 
