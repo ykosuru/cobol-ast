@@ -1002,7 +1002,36 @@ class FlowBasedCorpusIndexer:
         with open(output_path, 'wb') as f:
             pickle.dump(corpus_data, f)
         
+        # Save human-readable summary
+        summary_path = output_path.replace('.pkl', '_summary.json')
+        summary = {
+            'version': corpus_data['version'],
+            'created_at': corpus_data['created_at'],
+            'total_chunks': len(self.chunks),
+            'total_procedures': len([c for c in self.chunks if c.procedure_name]),
+            'flow_distribution': self.stats.get('flow_distribution', {}),
+            'network_distribution': self.stats.get('network_distribution', {}),
+            'sample_procedures': [
+                chunk.procedure_name for chunk in self.chunks 
+                if chunk.procedure_name
+            ][:20],
+            'sample_message_patterns': list(set([
+                pattern for chunk in self.chunks 
+                for pattern in chunk.message_patterns
+            ]))[:15]
+        }
+        
+        with open(summary_path, 'w', encoding='utf-8') as f:
+            json.dump(summary, f, indent=2)
+        
         print(f"✅ Payment flow corpus saved to: {output_path}")
+        print(f"📋 Summary saved to: {summary_path}")
+        print(f"💾 Corpus: {len(self.chunks)} chunks")
+        print(f"🔄 Flow types: {len(self.vectorizer.flow_dimensions)}")
+        print(f"🌐 Networks: {len(self.vectorizer.network_dimensions)}")
+        print(f"\n🔍 Use the PaymentFlowSearcher with this corpus file:")
+        print(f"   python payment_flow_searcher.py {output_path}")
+
 
 # ===== SEARCHER =====
 
