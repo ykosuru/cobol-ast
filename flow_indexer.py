@@ -286,6 +286,23 @@ class FlowBasedChunk:
         
         return found_features
     
+    def __hash__(self):
+        """Make chunk hashable for use in sets."""
+        return hash((self.source_file, self.chunk_id, self.start_line, self.end_line))
+    
+    def __eq__(self, other):
+        """Define equality for chunks."""
+        if not isinstance(other, FlowBasedChunk):
+            return False
+        return (self.source_file == other.source_file and 
+                self.chunk_id == other.chunk_id and
+                self.start_line == other.start_line and
+                self.end_line == other.end_line)
+    
+    def __repr__(self):
+        """String representation for debugging."""
+        return f"FlowBasedChunk(file={os.path.basename(self.source_file)}, id={self.chunk_id}, proc={self.procedure_name})"
+    
     def _extract_swift_message_types(self):
         """Extract SWIFT-specific message types and features."""
         swift_patterns = [
