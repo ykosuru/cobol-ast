@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-Payment Flow Corpus Searcher
+Dedicated Payment Flow Indexer
 
-Standalone searcher for payment flow-indexed TAL corpus files.
-Provides comprehensive search capabilities for Federal Reserve, SWIFT, and CHIPS
-wire processing code discovery.
+Streamlined indexer for creating searchable indexes of TAL payment processing code.
+Focuses on efficient index creation and storage for use with the searcher.
 """
 
 import os
@@ -12,11 +11,34 @@ import re
 import json
 import pickle
 import math
+import sys
+import time
 from collections import defaultdict, Counter
-from typing import Dict, List, Set, Tuple, Any, Optional
+from pathlib import Path
 from enum import Enum
+from typing import Dict, List, Set, Tuple, Any, Optional
 
-# ===== ENUM DEFINITIONS (must match indexer) =====
+# Try to import NLTK components (graceful fallback if not available)
+try:
+    import nltk
+    from nltk.corpus import stopwords
+    from nltk.stem import PorterStemmer
+    NLTK_AVAILABLE = True
+    
+    # Download required NLTK data if needed
+    try:
+        nltk.data.find('tokenizers/punkt')
+        nltk.data.find('corpora/stopwords')
+    except LookupError:
+        print("📦 Downloading NLTK data...")
+        nltk.download('punkt', quiet=True)
+        nltk.download('stopwords', quiet=True)
+        
+except ImportError:
+    NLTK_AVAILABLE = False
+    print("⚠️  NLTK not available - using basic text processing")
+
+# ===== ENUM DEFINITIONS =====
 
 class PaymentNetwork(Enum):
     """Payment network types."""
@@ -38,1235 +60,1053 @@ class FlowType(Enum):
     REPORTING = "reporting"
     REPAIR = "repair"
 
-class ISOMessageType(Enum):
-    """ISO 20022 message types relevant to Federal Reserve systems."""
-    PACS008 = "pacs.008.001"  # FIToFICstmrCdtTrf
-    PACS009 = "pacs.009.001"  # FIToFICstmrCdtTrf (Return)
-    PACS002 = "pacs.002.001"  # FIToFIPmtStsRpt
-    PACS004 = "pacs.004.001"  # PmtRtr
-    PACS007 = "pacs.007.001"  # FIToFIPmtRvsl
-    PAIN001 = "pain.001.001"  # CstmrCdtTrfInitn
-    PAIN002 = "pain.002.001"  # CstmrPmtStsRpt
-    CAMT052 = "camt.052.001"  # BkToCstmrAcctRpt
-    CAMT053 = "camt.053.001"  # BkToCstmrStmt
-    CAMT054 = "camt.054.001"  # BkToCstmrDbtCdtNtfctn
-    CAMT056 = "camt.056.001"  # FIToFICstmrCdtTrfCxlReq
-    CAMT029 = "camt.029.001"  # ResolutionOfInvestigation
+# ===== CHUNK CLASS =====
 
-# ===== CHUNK CLASS FOR LOADING =====
-
-class SearchableChunk:
-    """Chunk class for search operations (loaded from saved corpus)."""
+class IndexableChunk:
+    """Lightweight chunk class optimized for indexing."""
     
-    def __init__(self, chunk_data):
-        # Basic properties
-        self.content = chunk_data['content']
-        self.source_file = chunk_data['source_file']
-        self.chunk_id = chunk_data['chunk_id']
-        self.start_line = chunk_data['start_line']
-        self.end_line = chunk_data['end_line']
-        self.procedure_name = chunk_data['procedure_name']
+    def __init__(self, content, source_file, chunk_id, start_line=0, end_line=0, procedure_name=""):
+        self.content = content
+        self.source_file = source_file
+        self.chunk_id = chunk_id
+        self.start_line = start_line
+        self.end_line = end_line
+        self.procedure_name = procedure_name
         
-        # Flow analysis results
-        self.detected_networks = {PaymentNetwork(net) for net in chunk_data['detected_networks']}
-        self.flow_capabilities = {FlowType(flow): score for flow, score in chunk_data['flow_capabilities'].items()}
-        self.primary_flow = FlowType(chunk_data['primary_flow']) if chunk_data['primary_flow'] else None
-        self.secondary_flows = [FlowType(flow) for flow in chunk_data['secondary_flows']]
-        self.flow_summary = chunk_data['flow_summary']
+        # Extract basic patterns
+        self.raw_words = re.findall(r'\b[a-zA-Z_][a-zA-Z0-9_]*\b', content.lower())
+        self.function_calls = self._extract_function_calls()
+        self.message_patterns = self._extract_message_patterns()
+        self.transaction_types = self._extract_transaction_types()
         
-        # Pattern data
-        self.message_patterns = chunk_data['message_patterns']
-        self.transaction_types = chunk_data['transaction_types']
-        self.function_calls = chunk_data['function_calls']
-        
-        # Vector data
-        self.flow_vector = chunk_data['flow_vector']
-        self.network_vector = chunk_data['network_vector']
-        self.tfidf_vector = chunk_data['tfidf_vector']
+        # Initialize analysis results (filled by analyzer)
+        self.words = []
+        self.stemmed_words = []
+        self.detected_networks = set()
+        self.flow_capabilities = {}
+        self.primary_flow = None
+        self.secondary_flows = []
+        self.flow_summary = ""
+        self.flow_vector = []
+        self.network_vector = []
+        self.tfidf_vector = []
     
-    def __hash__(self):
-        """Make chunk hashable for use in sets."""
-        return hash((self.source_file, self.chunk_id, self.start_line, self.end_line))
+    def _extract_function_calls(self):
+        """Extract function call patterns."""
+        pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\('
+        return list(set(re.findall(pattern, self.content, re.IGNORECASE)))
     
-    def __eq__(self, other):
-        """Define equality for chunks."""
-        if not isinstance(other, SearchableChunk):
-            return False
-        return (self.source_file == other.source_file and 
-                self.chunk_id == other.chunk_id and
-                self.start_line == other.start_line and
-                self.end_line == other.end_line)
-    
-    def __repr__(self):
-        """String representation for debugging."""
-        return f"SearchableChunk(file={os.path.basename(self.source_file)}, id={self.chunk_id}, proc={self.procedure_name})"
-    
-    def __lt__(self, other):
-        """Less than comparison for sorting."""
-        if not isinstance(other, SearchableChunk):
-            return NotImplemented
-        return (self.source_file, self.chunk_id) < (other.source_file, other.chunk_id)
-    
-    def __le__(self, other):
-        """Less than or equal comparison for sorting."""
-        if not isinstance(other, SearchableChunk):
-            return NotImplemented
-        return (self.source_file, self.chunk_id) <= (other.source_file, other.chunk_id)
-    
-    def __gt__(self, other):
-        """Greater than comparison for sorting."""
-        if not isinstance(other, SearchableChunk):
-            return NotImplemented
-        return (self.source_file, self.chunk_id) > (other.source_file, other.chunk_id)
-    
-    def __ge__(self, other):
-        """Greater than or equal comparison for sorting."""
-        if not isinstance(other, SearchableChunk):
-            return NotImplemented
-        return (self.source_file, self.chunk_id) >= (other.source_file, other.chunk_id)
-
-# ===== MAIN SEARCHER CLASS =====
-
-class PaymentFlowSearcher:
-    """Advanced searcher for payment flow-indexed corpus."""
-    
-    def __init__(self, corpus_path: str):
-        self.chunks = []
-        self.vectorizer_data = {}
-        self.corpus_stats = {}
-        self.search_indexes = {}
-        
-        self.load_corpus(corpus_path)
-        self.build_search_indexes()
-        
-        print(f"✅ Payment Flow Searcher initialized")
-        print(f"   📦 {len(self.chunks)} chunks loaded")
-        print(f"   🔄 {len([c for c in self.chunks if c.primary_flow])} chunks with primary flows")
-        print(f"   🌐 {len([c for c in self.chunks if c.detected_networks])} chunks with detected networks")
-    
-    def load_corpus(self, corpus_path: str):
-        """Load payment flow corpus from saved file."""
-        if not os.path.exists(corpus_path):
-            raise FileNotFoundError(f"Corpus file not found: {corpus_path}")
-        
-        print(f"📖 Loading corpus from: {corpus_path}")
-        
-        with open(corpus_path, 'rb') as f:
-            corpus_data = pickle.load(f)
-        
-        # Validate corpus version
-        if 'version' not in corpus_data or not corpus_data['version'].startswith('3.0-payment-flow'):
-            print("⚠️  Warning: Corpus may not be compatible with this searcher version")
-        
-        # Load chunks
-        for chunk_data in corpus_data['chunks']:
-            chunk = SearchableChunk(chunk_data)
-            self.chunks.append(chunk)
-        
-        # Load vectorizer data
-        self.vectorizer_data = corpus_data.get('vectorizer', {})
-        self.corpus_stats = corpus_data.get('statistics', {})
-        
-        print(f"📊 Corpus statistics:")
-        print(f"   Files: {self.corpus_stats.get('total_files', 'unknown')}")
-        print(f"   Procedures: {self.corpus_stats.get('total_procedures', 'unknown')}")
-    
-    def build_search_indexes(self):
-        """Build search indexes for efficient querying."""
-        print("🔍 Building search indexes...")
-        
-        # Index by flow type
-        self.search_indexes['by_flow'] = defaultdict(list)
-        for chunk in self.chunks:
-            if chunk.primary_flow:
-                self.search_indexes['by_flow'][chunk.primary_flow].append(chunk)
-            for secondary_flow in chunk.secondary_flows:
-                self.search_indexes['by_flow'][secondary_flow].append(chunk)
-        
-        # Index by network
-        self.search_indexes['by_network'] = defaultdict(list)
-        for chunk in self.chunks:
-            for network in chunk.detected_networks:
-                self.search_indexes['by_network'][network].append(chunk)
-        
-        # Index by message pattern
-        self.search_indexes['by_message'] = defaultdict(list)
-        for chunk in self.chunks:
-            for pattern in chunk.message_patterns:
-                self.search_indexes['by_message'][pattern].append(chunk)
-        
-        # Index by procedure name
-        self.search_indexes['by_procedure'] = defaultdict(list)
-        for chunk in self.chunks:
-            if chunk.procedure_name:
-                # Index by full name and prefix
-                self.search_indexes['by_procedure'][chunk.procedure_name.lower()].append(chunk)
-                # Index by prefix (first part before underscore)
-                if '_' in chunk.procedure_name:
-                    prefix = chunk.procedure_name.split('_')[0].lower()
-                    self.search_indexes['by_procedure'][prefix].append(chunk)
-        
-        # Index by function calls
-        self.search_indexes['by_function'] = defaultdict(list)
-        for chunk in self.chunks:
-            for func_call in chunk.function_calls:
-                self.search_indexes['by_function'][func_call.lower()].append(chunk)
-        
-        print(f"   🔄 Flow index: {len(self.search_indexes['by_flow'])} flow types")
-        print(f"   🌐 Network index: {len(self.search_indexes['by_network'])} networks")
-        print(f"   📨 Message index: {len(self.search_indexes['by_message'])} message patterns")
-        print(f"   🔧 Procedure index: {len(self.search_indexes['by_procedure'])} procedure names")
-        print(f"   📞 Function index: {len(self.search_indexes['by_function'])} function calls")
-    
-    # ===== CORE SEARCH METHODS =====
-    
-    def search_by_flow(self, flow_type: FlowType, 
-                      network: PaymentNetwork = None,
-                      min_score: float = 0.0,
-                      top_k: int = 10) -> List[Tuple[float, SearchableChunk]]:
-        """Search for chunks by payment flow type."""
-        candidates = self.search_indexes['by_flow'].get(flow_type, [])
-        
-        # Filter by network if specified
-        if network:
-            candidates = [chunk for chunk in candidates if network in chunk.detected_networks]
-        
-        # Score and filter
-        scored_results = []
-        for chunk in candidates:
-            score = chunk.flow_capabilities.get(flow_type, 0.0)
-            if score >= min_score:
-                scored_results.append((score, chunk))
-        
-        # Sort by score
-        scored_results.sort(reverse=True)
-        return scored_results[:top_k]
-    
-    def search_by_network(self, network: PaymentNetwork,
-                         flow_type: FlowType = None,
-                         top_k: int = 15) -> List[SearchableChunk]:
-        """Search for chunks by payment network."""
-        candidates = self.search_indexes['by_network'].get(network, [])
-        
-        # Filter by flow type if specified
-        if flow_type:
-            candidates = [chunk for chunk in candidates 
-                         if chunk.primary_flow == flow_type or flow_type in chunk.secondary_flows]
-        
-        return candidates[:top_k]
-    
-    def search_by_message_type(self, message_pattern: str,
-                              network: PaymentNetwork = None,
-                              top_k: int = 10) -> List[Tuple[float, SearchableChunk]]:
-        """Search for chunks that process specific message types."""
-        candidates = []
-        
-        # Direct message pattern search
-        for pattern, chunks in self.search_indexes['by_message'].items():
-            if message_pattern.lower() in pattern.lower():
-                candidates.extend(chunks)
-        
-        # Content-based search for message patterns not in index
-        for chunk in self.chunks:
-            if message_pattern.lower() in chunk.content.lower():
-                candidates.append(chunk)
-        
-        # Remove duplicates manually to avoid sorting issues
-        seen_chunks = set()
-        candidates_unique = []
-        for chunk in candidates:
-            chunk_key = (chunk.source_file, chunk.chunk_id, chunk.start_line)
-            if chunk_key not in seen_chunks:
-                seen_chunks.add(chunk_key)
-                candidates_unique.append(chunk)
-        
-        candidates = candidates_unique
-        
-        # Filter by network if specified
-        if network:
-            candidates = [chunk for chunk in candidates if network in chunk.detected_networks]
-        
-        # Score by relevance
-        scored_results = []
-        for chunk in candidates:
-            score = self._calculate_message_relevance_score(message_pattern, chunk)
-            scored_results.append((score, chunk))
-        
-        scored_results.sort(reverse=True)
-        return scored_results[:top_k]
-    
-    def search_by_procedure(self, procedure_pattern: str,
-                           flow_type: FlowType = None,
-                           top_k: int = 10) -> List[Tuple[float, SearchableChunk]]:
-        """Search for procedures by name pattern."""
-        candidates = []
-        pattern_lower = procedure_pattern.lower()
-        
-        # Search by exact match and partial match
-        for proc_name, chunks in self.search_indexes['by_procedure'].items():
-            if pattern_lower in proc_name or proc_name in pattern_lower:
-                candidates.extend(chunks)
-        
-        # Remove duplicates manually
-        seen_chunks = set()
-        candidates_unique = []
-        for chunk in candidates:
-            chunk_key = (chunk.source_file, chunk.chunk_id, chunk.start_line)
-            if chunk_key not in seen_chunks:
-                seen_chunks.add(chunk_key)
-                candidates_unique.append(chunk)
-        
-        candidates = candidates_unique
-        
-        # Filter by flow type if specified
-        if flow_type:
-            candidates = [chunk for chunk in candidates 
-                         if chunk.primary_flow == flow_type or flow_type in chunk.secondary_flows]
-        
-        # Score by name similarity
-        scored_results = []
-        for chunk in candidates:
-            score = self._calculate_procedure_similarity_score(procedure_pattern, chunk.procedure_name)
-            scored_results.append((score, chunk))
-        
-        scored_results.sort(reverse=True)
-        return scored_results[:top_k]
-    
-    def search_by_function(self, function_pattern: str,
-                          flow_type: FlowType = None,
-                          top_k: int = 10) -> List[Tuple[float, SearchableChunk]]:
-        """Search for chunks that call specific functions."""
-        candidates = []
-        pattern_lower = function_pattern.lower()
-        
-        # Search function call index
-        for func_name, chunks in self.search_indexes['by_function'].items():
-            if pattern_lower in func_name or func_name in pattern_lower:
-                candidates.extend(chunks)
-        
-        # Remove duplicates manually
-        seen_chunks = set()
-        candidates_unique = []
-        for chunk in candidates:
-            chunk_key = (chunk.source_file, chunk.chunk_id, chunk.start_line)
-            if chunk_key not in seen_chunks:
-                seen_chunks.add(chunk_key)
-                candidates_unique.append(chunk)
-        
-        candidates = candidates_unique
-        
-        # Filter by flow type if specified
-        if flow_type:
-            candidates = [chunk for chunk in candidates 
-                         if chunk.primary_flow == flow_type or flow_type in chunk.secondary_flows]
-        
-        # Score by function call relevance
-        scored_results = []
-        for chunk in candidates:
-            score = self._calculate_function_relevance_score(function_pattern, chunk)
-            scored_results.append((score, chunk))
-        
-        scored_results.sort(reverse=True)
-        return scored_results[:top_k]
-    
-    def search_by_keywords(self, keywords: List[str],
-                          flow_type: FlowType = None,
-                          network: PaymentNetwork = None,
-                          top_k: int = 15) -> List[Tuple[float, SearchableChunk]]:
-        """Search for chunks by keywords in content."""
-        scored_results = []
-        
-        for chunk in self.chunks:
-            # Filter by flow type if specified
-            if flow_type and chunk.primary_flow != flow_type and flow_type not in chunk.secondary_flows:
-                continue
-            
-            # Filter by network if specified
-            if network and network not in chunk.detected_networks:
-                continue
-            
-            # Calculate keyword match score
-            score = self._calculate_keyword_score(keywords, chunk)
-            if score > 0:
-                scored_results.append((score, chunk))
-        
-        scored_results.sort(reverse=True)
-        return scored_results[:top_k]
-    
-    # ===== SPECIALIZED SEARCH METHODS =====
-    
-    def find_validation_patterns(self, validation_type: str = None,
-                                message_type: str = None,
-                                field_name: str = None,
-                                top_k: int = 10) -> List[Tuple[float, SearchableChunk]]:
-        """Find validation patterns for ISO messages and fields."""
-        # Start with validation flow chunks
-        validation_chunks = self.search_indexes['by_flow'].get(FlowType.VALIDATION, [])
-        
-        candidates = []
-        
-        # Search validation chunks
-        for chunk in validation_chunks:
-            content_lower = chunk.content.lower()
-            
-            # Filter by validation type
-            if validation_type and validation_type.lower() not in content_lower:
-                continue
-            
-            # Filter by message type
-            if message_type and message_type.lower() not in content_lower:
-                continue
-            
-            # Filter by field name
-            if field_name and field_name.lower() not in content_lower:
-                continue
-            
-            candidates.append(chunk)
-        
-        # Also search content for validation keywords
-        validation_keywords = ['validate', 'validation', 'verify', 'check', 'format', 'mandatory', 'optional']
-        for chunk in self.chunks:
-            if chunk in candidates:
-                continue
-            
-            content_lower = chunk.content.lower()
-            if any(keyword in content_lower for keyword in validation_keywords):
-                # Apply same filters
-                if validation_type and validation_type.lower() not in content_lower:
-                    continue
-                if message_type and message_type.lower() not in content_lower:
-                    continue
-                if field_name and field_name.lower() not in content_lower:
-                    continue
-                
-                candidates.append(chunk)
-        
-        # Score validation candidates
-        scored_results = []
-        for chunk in candidates:
-            score = self._calculate_validation_score(chunk, validation_type, message_type, field_name)
-            scored_results.append((score, chunk))
-        
-        scored_results.sort(reverse=True)
-        return scored_results[:top_k]
-    
-    def find_iso_message_processing(self, message_type: ISOMessageType,
-                                   processing_stage: str = None,
-                                   top_k: int = 10) -> List[Tuple[float, SearchableChunk]]:
-        """Find chunks that process specific ISO 20022 message types."""
-        message_pattern = message_type.value.lower().replace('.', '')
-        
-        # Search by message pattern
-        message_results = self.search_by_message_type(message_pattern, top_k=top_k*2)
-        
-        candidates = []
-        
-        # Filter and score results
-        for score, chunk in message_results:
-            content_lower = chunk.content.lower()
-            
-            # Additional scoring for ISO message processing
-            iso_score = score
-            
-            # Boost for message type in function names
-            if any(message_pattern in func.lower() for func in chunk.function_calls):
-                iso_score += 2.0
-            
-            # Boost for message type in procedure name
-            if chunk.procedure_name and message_pattern in chunk.procedure_name.lower():
-                iso_score += 3.0
-            
-            # Filter by processing stage if specified
-            if processing_stage:
-                if processing_stage.lower() not in content_lower:
-                    continue
-                # Boost for processing stage
-                iso_score += 1.0
-            
-            candidates.append((iso_score, chunk))
-        
-        candidates.sort(reverse=True)
-        return candidates[:top_k]
-    
-    def find_error_handling_patterns(self, error_type: str = None,
-                                   network: PaymentNetwork = None,
-                                   top_k: int = 10) -> List[Tuple[float, SearchableChunk]]:
-        """Find error handling and exception processing patterns."""
-        # Start with exception handling flow chunks
-        exception_chunks = self.search_indexes['by_flow'].get(FlowType.EXCEPTION_HANDLING, [])
-        
-        candidates = []
-        
-        # Search exception handling chunks
-        for chunk in exception_chunks:
-            if network and network not in chunk.detected_networks:
-                continue
-            
-            content_lower = chunk.content.lower()
-            if error_type and error_type.lower() not in content_lower:
-                continue
-            
-            candidates.append(chunk)
-        
-        # Search all chunks for error handling keywords
-        error_keywords = ['error', 'exception', 'fault', 'fail', 'reject', 'return', 'repair']
-        for chunk in self.chunks:
-            if chunk in candidates:
-                continue
-            
-            content_lower = chunk.content.lower()
-            if any(keyword in content_lower for keyword in error_keywords):
-                if network and network not in chunk.detected_networks:
-                    continue
-                if error_type and error_type.lower() not in content_lower:
-                    continue
-                
-                candidates.append(chunk)
-        
-        # Score error handling candidates
-        scored_results = []
-        for chunk in candidates:
-            score = self._calculate_error_handling_score(chunk, error_type)
-            scored_results.append((score, chunk))
-        
-        scored_results.sort(reverse=True)
-        return scored_results[:top_k]
-    
-    def find_similar_procedures(self, reference_procedure: str,
-                              flow_type: FlowType = None,
-                              top_k: int = 5) -> List[Tuple[float, SearchableChunk]]:
-        """Find procedures similar to a reference procedure."""
-        candidates = []
-        
-        # Find the reference chunk first
-        reference_chunks = [chunk for chunk in self.chunks 
-                          if chunk.procedure_name and reference_procedure.lower() in chunk.procedure_name.lower()]
-        
-        if not reference_chunks:
-            return []
-        
-        reference_chunk = reference_chunks[0]  # Use first match as reference
-        
-        # Find similar chunks by comparing flow vectors
-        for chunk in self.chunks:
-            if chunk == reference_chunk or not chunk.procedure_name:
-                continue
-            
-            # Filter by flow type if specified
-            if flow_type and chunk.primary_flow != flow_type and flow_type not in chunk.secondary_flows:
-                continue
-            
-            # Calculate similarity
-            similarity = self._calculate_vector_similarity(reference_chunk.flow_vector, chunk.flow_vector)
-            
-            if similarity > 0.1:  # Minimum similarity threshold
-                candidates.append((similarity, chunk))
-        
-        candidates.sort(reverse=True)
-        return candidates[:top_k]
-    
-    # ===== ANALYSIS METHODS =====
-    
-    def analyze_flow_coverage(self) -> Dict[str, Any]:
-        """Analyze coverage of payment flows in the corpus."""
-        analysis = {
-            'total_chunks': len(self.chunks),
-            'chunks_with_flows': len([c for c in self.chunks if c.primary_flow]),
-            'flow_distribution': {},
-            'network_distribution': {},
-            'flow_network_matrix': {},
-            'coverage_gaps': []
+    def _extract_message_patterns(self):
+        """Extract payment message patterns."""
+        patterns = {
+            'pacs008': r'pacs\.?008|customer.credit.transfer',
+            'pacs009': r'pacs\.?009|financial.institution.credit',
+            'mt103': r'mt\.?103|single.customer.credit',
+            'mt202': r'mt\.?202|financial.institution.transfer',
+            'fedwire_1000': r'type.?code.?1000|customer.transfer',
+            'fedwire_1200': r'type.?code.?1200|bank.transfer',
         }
         
-        # Flow distribution
+        found = []
+        content_lower = self.content.lower()
+        for name, regex in patterns.items():
+            if re.search(regex, content_lower):
+                found.append(name)
+        return found
+    
+    def _extract_transaction_types(self):
+        """Extract transaction type indicators."""
+        patterns = {
+            'customer_transfer': r'customer.transfer|originator.*beneficiary',
+            'validation': r'validat|verify|check.*format',
+            'error_handling': r'error|exception|reject|repair',
+            'screening': r'ofac|sanctions|aml|compliance',
+        }
+        
+        found = []
+        content_lower = self.content.lower()
+        for name, regex in patterns.items():
+            if re.search(regex, content_lower):
+                found.append(name)
+        return found
+    
+    def to_dict(self):
+        """Convert chunk to dictionary for serialization."""
+        return {
+            'content': self.content,
+            'source_file': self.source_file,
+            'chunk_id': self.chunk_id,
+            'start_line': self.start_line,
+            'end_line': self.end_line,
+            'procedure_name': self.procedure_name,
+            'function_calls': self.function_calls,
+            'message_patterns': self.message_patterns,
+            'transaction_types': self.transaction_types,
+            'detected_networks': [net.value for net in self.detected_networks],
+            'flow_capabilities': {flow.value: score for flow, score in self.flow_capabilities.items()},
+            'primary_flow': self.primary_flow.value if self.primary_flow else None,
+            'secondary_flows': [flow.value for flow in self.secondary_flows],
+            'flow_summary': self.flow_summary,
+            'flow_vector': self.flow_vector,
+            'network_vector': self.network_vector,
+            'tfidf_vector': self.tfidf_vector
+        }
+
+# ===== TEXT PROCESSOR =====
+
+class StreamlinedTextProcessor:
+    """Efficient text processor for indexing."""
+    
+    def __init__(self):
+        self.stemmer = None
+        self.stop_words = set()
+        
+        if NLTK_AVAILABLE:
+            self.stemmer = PorterStemmer()
+            try:
+                self.stop_words = set(stopwords.words('english'))
+            except:
+                pass
+        
+        # Programming and TAL stop words
+        self.stop_words.update({
+            'int', 'char', 'string', 'void', 'return', 'if', 'else', 'while', 'for',
+            'proc', 'subproc', 'begin', 'end', 'call', 'tal', 'tandem', 'system'
+        })
+    
+    def process_words(self, words):
+        """Process words efficiently."""
+        if not words:
+            return [], []
+        
+        # Filter words
+        filtered = [w for w in words 
+                   if len(w) >= 3 and w.lower() not in self.stop_words and not w.isdigit()]
+        
+        # Apply stemming if available
+        if self.stemmer:
+            stemmed = [self.stemmer.stem(w) for w in filtered]
+        else:
+            stemmed = filtered.copy()
+        
+        return filtered, stemmed
+
+# ===== CHUNKER =====
+
+class EfficientChunker:
+    """Efficient file chunker."""
+    
+    def __init__(self):
+        self.procedure_patterns = [
+            re.compile(r'^\s*(?:PROC|SUBPROC)\s+(\w+)', re.IGNORECASE | re.MULTILINE),
+            re.compile(r'^\s*(\w+)\s*\([^)]*\)\s*{', re.MULTILINE),
+            re.compile(r'^\s*(?:static\s+)?(?:int|void|char\*?)\s+(\w+)\s*\(', re.MULTILINE),
+        ]
+    
+    def chunk_file(self, file_path):
+        """Chunk a file efficiently."""
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+        except Exception as e:
+            print(f"⚠️  Error reading {file_path}: {e}")
+            return []
+        
+        if not content.strip():
+            return []
+        
+        return self._create_chunks(content, file_path)
+    
+    def _create_chunks(self, content, file_path):
+        """Create chunks from content."""
+        lines = content.split('\n')
+        chunks = []
+        chunk_id = 0
+        
+        # Find procedure boundaries
+        procedures = []
+        for pattern in self.procedure_patterns:
+            for match in pattern.finditer(content):
+                line_no = content[:match.start()].count('\n')
+                proc_name = match.group(1)
+                procedures.append((line_no, proc_name))
+        
+        procedures.sort()
+        
+        # Create chunks
+        current_chunk = []
+        chunk_start = 0
+        proc_name = ""
+        
+        for line_no, line in enumerate(lines):
+            # Check for new procedure
+            for proc_line, proc in procedures:
+                if proc_line == line_no:
+                    # Save current chunk
+                    if current_chunk and any(l.strip() for l in current_chunk):
+                        chunk_content = '\n'.join(current_chunk)
+                        chunk = IndexableChunk(
+                            content=chunk_content,
+                            source_file=file_path,
+                            chunk_id=chunk_id,
+                            start_line=chunk_start,
+                            end_line=line_no - 1,
+                            procedure_name=proc_name
+                        )
+                        chunks.append(chunk)
+                        chunk_id += 1
+                    
+                    # Start new chunk
+                    current_chunk = [line]
+                    chunk_start = line_no
+                    proc_name = proc
+                    break
+            else:
+                current_chunk.append(line)
+                
+                # Split large chunks
+                if len(current_chunk) > 100:
+                    chunk_content = '\n'.join(current_chunk)
+                    if chunk_content.strip():
+                        chunk = IndexableChunk(
+                            content=chunk_content,
+                            source_file=file_path,
+                            chunk_id=chunk_id,
+                            start_line=chunk_start,
+                            end_line=line_no,
+                            procedure_name=proc_name
+                        )
+                        chunks.append(chunk)
+                        chunk_id += 1
+                    current_chunk = []
+                    chunk_start = line_no + 1
+                    proc_name = ""
+        
+        # Handle remaining content
+        if current_chunk and any(l.strip() for l in current_chunk):
+            chunk_content = '\n'.join(current_chunk)
+            chunk = IndexableChunk(
+                content=chunk_content,
+                source_file=file_path,
+                chunk_id=chunk_id,
+                start_line=chunk_start,
+                end_line=len(lines) - 1,
+                procedure_name=proc_name
+            )
+            chunks.append(chunk)
+        
+        return chunks
+
+# ===== FLOW ANALYZER =====
+
+class FlowAnalyzer:
+    """Analyze payment flows efficiently."""
+    
+    def __init__(self):
+        self.flow_patterns = {
+            FlowType.CUSTOMER_TRANSFER: {
+                'keywords': {'customer', 'transfer', 'originator', 'beneficiary', 'individual'},
+                'patterns': [r'customer.*transfer', r'originator.*beneficiary', r'type.?code.?1000']
+            },
+            FlowType.VALIDATION: {
+                'keywords': {'validat', 'verify', 'check', 'format', 'mandatory'},
+                'patterns': [r'validat.*process', r'check.*format', r'verify.*field']
+            },
+            FlowType.EXCEPTION_HANDLING: {
+                'keywords': {'exception', 'error', 'reject', 'repair', 'fail'},
+                'patterns': [r'exception.*handl', r'error.*process', r'reject.*payment']
+            },
+            FlowType.SCREENING: {
+                'keywords': {'ofac', 'sanctions', 'aml', 'compliance', 'screening'},
+                'patterns': [r'ofac.*screen', r'sanctions.*check', r'aml.*monitor']
+            },
+            FlowType.SETTLEMENT: {
+                'keywords': {'settlement', 'clearing', 'netting', 'rtgs'},
+                'patterns': [r'settlement.*process', r'clearing.*house', r'net.*position']
+            }
+        }
+        
+        self.network_patterns = {
+            PaymentNetwork.FEDWIRE: {
+                'keywords': {'fedwire', 'imad', 'omad', 'federal_reserve', 'type_code'},
+                'patterns': [r'fedwire.*process', r'type.*code.*\d{4}', r'imad.*generate']
+            },
+            PaymentNetwork.SWIFT: {
+                'keywords': {'swift', 'mt103', 'mt202', 'bic', 'gpi', 'uetr'},
+                'patterns': [r'swift.*process', r'mt\d{3}', r'gpi.*track']
+            },
+            PaymentNetwork.CHIPS: {
+                'keywords': {'chips', 'uid', 'netting', 'clearing_house'},
+                'patterns': [r'chips.*process', r'uid.*generat', r'clearing.*house']
+            }
+        }
+    
+    def analyze_chunk(self, chunk: IndexableChunk, text_processor: StreamlinedTextProcessor):
+        """Analyze chunk for flows and networks."""
+        # Process words
+        chunk.words, chunk.stemmed_words = text_processor.process_words(chunk.raw_words)
+        
+        # Detect networks
+        self._detect_networks(chunk)
+        
+        # Analyze flows
+        self._analyze_flows(chunk)
+        
+        # Set primary flow
+        self._set_primary_flow(chunk)
+        
+        # Create summary
+        self._create_summary(chunk)
+    
+    def _detect_networks(self, chunk):
+        """Detect payment networks."""
+        content_lower = chunk.content.lower()
+        chunk_words = set(chunk.words + chunk.stemmed_words)
+        
+        for network, data in self.network_patterns.items():
+            score = 0
+            
+            # Keyword matching
+            keyword_matches = len(chunk_words & data['keywords'])
+            score += keyword_matches * 2
+            
+            # Pattern matching
+            for pattern in data['patterns']:
+                if re.search(pattern, content_lower):
+                    score += 3
+            
+            # Message pattern boost
+            if network == PaymentNetwork.SWIFT and any('mt' in p for p in chunk.message_patterns):
+                score += 2
+            elif network == PaymentNetwork.FEDWIRE and any('fedwire' in p for p in chunk.message_patterns):
+                score += 2
+            
+            if score > 2:
+                chunk.detected_networks.add(network)
+    
+    def _analyze_flows(self, chunk):
+        """Analyze payment flow capabilities."""
+        content_lower = chunk.content.lower()
+        chunk_words = set(chunk.words + chunk.stemmed_words)
+        
+        for flow, data in self.flow_patterns.items():
+            score = 0.0
+            
+            # Keyword matching
+            keyword_matches = len(chunk_words & data['keywords'])
+            score += keyword_matches * 0.5
+            
+            # Pattern matching
+            for pattern in data['patterns']:
+                if re.search(pattern, content_lower):
+                    score += 1.0
+            
+            # Function name boost
+            if chunk.procedure_name:
+                proc_lower = chunk.procedure_name.lower()
+                for keyword in data['keywords']:
+                    if keyword in proc_lower:
+                        score += 0.8
+            
+            # Transaction type boost
+            flow_transaction_map = {
+                FlowType.CUSTOMER_TRANSFER: ['customer_transfer'],
+                FlowType.VALIDATION: ['validation'],
+                FlowType.EXCEPTION_HANDLING: ['error_handling'],
+                FlowType.SCREENING: ['screening']
+            }
+            
+            if flow in flow_transaction_map:
+                for trans_type in flow_transaction_map[flow]:
+                    if trans_type in chunk.transaction_types:
+                        score += 0.6
+            
+            chunk.flow_capabilities[flow] = score
+    
+    def _set_primary_flow(self, chunk):
+        """Set primary and secondary flows."""
+        sorted_flows = sorted(chunk.flow_capabilities.items(), key=lambda x: x[1], reverse=True)
+        
+        if sorted_flows and sorted_flows[0][1] > 0.5:
+            chunk.primary_flow = sorted_flows[0][0]
+        
+        chunk.secondary_flows = [
+            flow for flow, score in sorted_flows[1:] 
+            if score > 0.3 and score >= sorted_flows[0][1] * 0.6
+        ][:2]
+    
+    def _create_summary(self, chunk):
+        """Create flow summary."""
+        networks = [net.value.upper() for net in chunk.detected_networks]
+        
+        if chunk.primary_flow:
+            flow_name = chunk.primary_flow.value.replace('_', ' ').title()
+            if networks:
+                chunk.flow_summary = f"{'/'.join(networks)} {flow_name}"
+            else:
+                chunk.flow_summary = flow_name
+        else:
+            if networks:
+                chunk.flow_summary = f"{'/'.join(networks)} Processing"
+            else:
+                chunk.flow_summary = "General Processing"
+
+# ===== MAIN INDEXER =====
+
+class PaymentFlowIndexer:
+    """Main indexer for creating searchable payment flow indexes."""
+    
+    def __init__(self, max_features=2000):
+        self.chunker = EfficientChunker()
+        self.text_processor = StreamlinedTextProcessor()
+        self.flow_analyzer = FlowAnalyzer()
+        self.max_features = max_features
+        
+        self.chunks = []
+        self.vocabulary = {}
+        self.stats = {}
+    
+    def index_directory(self, directory_path, file_extensions=None, output_file=None):
+        """Index a directory and save the index."""
+        if file_extensions is None:
+            file_extensions = ['.tal', '.TAL', '.c', '.h', '.cpp', '.hpp']
+        
+        print(f"🏦 Payment Flow Indexer")
+        print(f"📁 Indexing: {directory_path}")
+        
+        start_time = time.time()
+        
+        # Find files
+        matching_files = self._find_files(directory_path, file_extensions)
+        if not matching_files:
+            print(f"❌ No files found with extensions: {file_extensions}")
+            return False
+        
+        print(f"📄 Found {len(matching_files)} files")
+        
+        # Process files
+        self._process_files(matching_files)
+        
+        if not self.chunks:
+            print("❌ No code chunks created")
+            return False
+        
+        # Analyze flows
+        self._analyze_payment_flows()
+        
+        # Create vectors
+        self._create_vectors()
+        
+        # Update statistics
+        self._update_statistics(matching_files)
+        
+        # Save index
+        if output_file is None:
+            dir_name = os.path.basename(os.path.abspath(directory_path))
+            output_file = f"payment_flow_index_{dir_name}.pkl"
+        
+        success = self._save_index(output_file)
+        
+        elapsed_time = time.time() - start_time
+        
+        # Print results
+        self._print_results(elapsed_time, output_file)
+        
+        return success
+    
+    def _find_files(self, directory_path, file_extensions):
+        """Find matching files."""
+        matching_files = []
+        for root, dirs, files in os.walk(directory_path):
+            for file in files:
+                if any(file.endswith(ext) for ext in file_extensions):
+                    matching_files.append(os.path.join(root, file))
+        return matching_files
+    
+    def _process_files(self, file_paths):
+        """Process files into chunks."""
+        print("🔄 Processing files...")
+        
+        self.chunks = []
+        for i, file_path in enumerate(file_paths):
+            if i % 10 == 0:
+                print(f"   {i+1}/{len(file_paths)}: {os.path.basename(file_path)}")
+            
+            file_chunks = self.chunker.chunk_file(file_path)
+            self.chunks.extend(file_chunks)
+        
+        print(f"📦 Created {len(self.chunks)} code chunks")
+    
+    def _analyze_payment_flows(self):
+        """Analyze payment flows for all chunks."""
+        print("🎯 Analyzing payment flows...")
+        
+        for i, chunk in enumerate(self.chunks):
+            if i % 100 == 0 and i > 0:
+                print(f"   Analyzed {i}/{len(self.chunks)} chunks")
+            
+            self.flow_analyzer.analyze_chunk(chunk, self.text_processor)
+        
+        flows_found = len([c for c in self.chunks if c.primary_flow])
+        networks_found = len([c for c in self.chunks if c.detected_networks])
+        
+        print(f"✅ Flow analysis complete:")
+        print(f"   🔄 {flows_found} chunks with identified flows")
+        print(f"   🌐 {networks_found} chunks with detected networks")
+    
+    def _create_vectors(self):
+        """Create simplified vectors."""
+        print("📊 Creating vectors...")
+        
+        # Build basic vocabulary
+        word_counts = defaultdict(int)
+        for chunk in self.chunks:
+            for word in set(chunk.stemmed_words):
+                word_counts[word] += 1
+        
+        # Filter vocabulary
+        min_freq = max(2, len(self.chunks) // 100)
+        max_freq = len(self.chunks) // 2
+        
+        vocab_words = [
+            word for word, count in word_counts.items()
+            if min_freq <= count <= max_freq and len(word) >= 3
+        ]
+        
+        vocab_words.sort(key=lambda w: word_counts[w], reverse=True)
+        if len(vocab_words) > self.max_features:
+            vocab_words = vocab_words[:self.max_features]
+        
+        self.vocabulary = {word: idx for idx, word in enumerate(vocab_words)}
+        
+        # Create vectors for chunks
+        for chunk in self.chunks:
+            # Flow vector
+            chunk.flow_vector = [
+                chunk.flow_capabilities.get(flow, 0.0) for flow in FlowType
+            ]
+            
+            # Network vector
+            chunk.network_vector = [
+                1.0 if network in chunk.detected_networks else 0.0 
+                for network in PaymentNetwork
+            ]
+            
+            # Simple TF-IDF vector
+            chunk.tfidf_vector = [0.0] * len(self.vocabulary)
+            word_counts = Counter(chunk.stemmed_words)
+            total_words = len(chunk.stemmed_words)
+            
+            if total_words > 0:
+                for word, count in word_counts.items():
+                    if word in self.vocabulary:
+                        tf = count / total_words
+                        chunk.tfidf_vector[self.vocabulary[word]] = tf
+        
+        print(f"   📝 Vocabulary size: {len(self.vocabulary)}")
+    
+    def _update_statistics(self, file_paths):
+        """Update indexing statistics."""
         flow_counts = defaultdict(int)
+        network_counts = defaultdict(int)
+        message_counts = defaultdict(int)
+        
         for chunk in self.chunks:
             if chunk.primary_flow:
                 flow_counts[chunk.primary_flow.value] += 1
-        analysis['flow_distribution'] = dict(flow_counts)
-        
-        # Network distribution
-        network_counts = defaultdict(int)
-        for chunk in self.chunks:
+            
             for network in chunk.detected_networks:
                 network_counts[network.value] += 1
-        analysis['network_distribution'] = dict(network_counts)
-        
-        # Flow-Network matrix
-        for flow in FlowType:
-            analysis['flow_network_matrix'][flow.value] = {}
-            for network in PaymentNetwork:
-                count = len([c for c in self.chunks 
-                           if c.primary_flow == flow and network in c.detected_networks])
-                analysis['flow_network_matrix'][flow.value][network.value] = count
-        
-        # Identify coverage gaps
-        for flow in FlowType:
-            if flow_counts.get(flow.value, 0) == 0:
-                analysis['coverage_gaps'].append(f"No implementation found for {flow.value}")
-        
-        return analysis
-    
-    def get_corpus_statistics(self) -> Dict[str, Any]:
-        """Get comprehensive corpus statistics."""
-        stats = {
-            'basic_stats': {
-                'total_chunks': len(self.chunks),
-                'chunks_with_procedures': len([c for c in self.chunks if c.procedure_name]),
-                'chunks_with_flows': len([c for c in self.chunks if c.primary_flow]),
-                'chunks_with_networks': len([c for c in self.chunks if c.detected_networks])
-            },
-            'flow_stats': {},
-            'network_stats': {},
-            'message_stats': {},
-            'top_procedures': [],
-            'top_functions': []
-        }
-        
-        # Flow statistics
-        for flow in FlowType:
-            chunks_with_flow = [c for c in self.chunks if c.primary_flow == flow or flow in c.secondary_flows]
-            stats['flow_stats'][flow.value] = {
-                'total_chunks': len(chunks_with_flow),
-                'avg_score': sum(c.flow_capabilities.get(flow, 0) for c in chunks_with_flow) / len(chunks_with_flow) if chunks_with_flow else 0
-            }
-        
-        # Network statistics
-        for network in PaymentNetwork:
-            chunks_with_network = [c for c in self.chunks if network in c.detected_networks]
-            stats['network_stats'][network.value] = len(chunks_with_network)
-        
-        # Message pattern statistics
-        message_counts = defaultdict(int)
-        for chunk in self.chunks:
+            
             for pattern in chunk.message_patterns:
                 message_counts[pattern] += 1
-        stats['message_stats'] = dict(message_counts)
         
-        # Top procedures by flow coverage
-        procedure_flow_counts = defaultdict(int)
-        for chunk in self.chunks:
-            if chunk.procedure_name:
-                flow_count = len([f for f, score in chunk.flow_capabilities.items() if score > 0.3])
-                procedure_flow_counts[chunk.procedure_name] = flow_count
-        
-        top_procedures = sorted(procedure_flow_counts.items(), key=lambda x: x[1], reverse=True)
-        stats['top_procedures'] = top_procedures[:10]
-        
-        # Top functions by usage
-        function_counts = defaultdict(int)
-        for chunk in self.chunks:
-            for func in chunk.function_calls:
-                function_counts[func] += 1
-        
-        top_functions = sorted(function_counts.items(), key=lambda x: x[1], reverse=True)
-        stats['top_functions'] = top_functions[:15]
-        
-        return stats
+        self.stats = {
+            'total_files': len(file_paths),
+            'total_chunks': len(self.chunks),
+            'chunks_with_procedures': len([c for c in self.chunks if c.procedure_name]),
+            'chunks_with_flows': len([c for c in self.chunks if c.primary_flow]),
+            'chunks_with_networks': len([c for c in self.chunks if c.detected_networks]),
+            'vocabulary_size': len(self.vocabulary),
+            'flow_distribution': dict(flow_counts),
+            'network_distribution': dict(network_counts),
+            'message_distribution': dict(message_counts)
+        }
     
-    # ===== SCORING METHODS =====
-    
-    def _calculate_message_relevance_score(self, message_pattern: str, chunk: SearchableChunk) -> float:
-        """Calculate relevance score for message type searches."""
-        score = 0.0
-        content_lower = chunk.content.lower()
-        message_lower = message_pattern.lower()
+    def _save_index(self, output_file):
+        """Save the searchable index."""
+        print(f"💾 Saving index...")
         
-        # Direct content matches
-        if message_lower in content_lower:
-            score += 2.0
-        
-        # Message pattern matches
-        for pattern in chunk.message_patterns:
-            if message_lower in pattern.lower():
-                score += 3.0
-        
-        # Function call matches
-        for func in chunk.function_calls:
-            if message_lower in func.lower():
-                score += 2.5
-        
-        # Procedure name matches
-        if chunk.procedure_name and message_lower in chunk.procedure_name.lower():
-            score += 4.0
-        
-        return score
-    
-    def _calculate_procedure_similarity_score(self, pattern: str, procedure_name: str) -> float:
-        """Calculate similarity score for procedure names."""
-        if not procedure_name:
-            return 0.0
-        
-        pattern_lower = pattern.lower()
-        proc_lower = procedure_name.lower()
-        
-        # Exact match
-        if pattern_lower == proc_lower:
-            return 10.0
-        
-        # Substring match
-        if pattern_lower in proc_lower:
-            return 8.0
-        
-        # Reverse substring match
-        if proc_lower in pattern_lower:
-            return 6.0
-        
-        # Word overlap
-        pattern_words = set(pattern_lower.split('_'))
-        proc_words = set(proc_lower.split('_'))
-        
-        if pattern_words and proc_words:
-            overlap = len(pattern_words & proc_words)
-            total = len(pattern_words | proc_words)
-            return (overlap / total) * 5.0
-        
-        return 0.0
-    
-    def _calculate_function_relevance_score(self, function_pattern: str, chunk: SearchableChunk) -> float:
-        """Calculate relevance score for function searches."""
-        score = 0.0
-        pattern_lower = function_pattern.lower()
-        
-        for func in chunk.function_calls:
-            func_lower = func.lower()
-            if pattern_lower == func_lower:
-                score += 5.0
-            elif pattern_lower in func_lower:
-                score += 3.0
-            elif func_lower in pattern_lower:
-                score += 2.0
-        
-        return score
-    
-    def _calculate_keyword_score(self, keywords: List[str], chunk: SearchableChunk) -> float:
-        """Calculate keyword match score."""
-        score = 0.0
-        content_lower = chunk.content.lower()
-        
-        for keyword in keywords:
-            keyword_lower = keyword.lower()
+        try:
+            index_data = {
+                'version': '1.0-payment-flow-index',
+                'created_at': __import__('datetime').datetime.now().isoformat(),
+                'chunks': [chunk.to_dict() for chunk in self.chunks],
+                'vocabulary': self.vocabulary,
+                'flow_types': [flow.value for flow in FlowType],
+                'network_types': [net.value for net in PaymentNetwork],
+                'statistics': self.stats
+            }
             
-            # Count occurrences in content
-            occurrences = content_lower.count(keyword_lower)
-            score += occurrences * 0.5
+            with open(output_file, 'wb') as f:
+                pickle.dump(index_data, f, protocol=pickle.HIGHEST_PROTOCOL)
             
-            # Boost for function names
-            if any(keyword_lower in func.lower() for func in chunk.function_calls):
-                score += 1.0
+            # Save summary
+            summary_file = output_file.replace('.pkl', '_summary.json')
+            summary = {
+                'version': index_data['version'],
+                'created_at': index_data['created_at'],
+                'statistics': self.stats,
+                'sample_procedures': [
+                    chunk.procedure_name for chunk in self.chunks[:20] 
+                    if chunk.procedure_name
+                ],
+                'sample_flows': list(set([
+                    chunk.primary_flow.value for chunk in self.chunks 
+                    if chunk.primary_flow
+                ])),
+                'sample_networks': list(set([
+                    net.value for chunk in self.chunks 
+                    for net in chunk.detected_networks
+                ]))
+            }
             
-            # Boost for procedure name
-            if chunk.procedure_name and keyword_lower in chunk.procedure_name.lower():
-                score += 2.0
-        
-        return score
-    
-    def _calculate_validation_score(self, chunk: SearchableChunk, 
-                                  validation_type: str = None,
-                                  message_type: str = None,
-                                  field_name: str = None) -> float:
-        """Calculate validation relevance score."""
-        score = 0.0
-        content_lower = chunk.content.lower()
-        
-        # Base validation score
-        validation_keywords = ['validate', 'validation', 'verify', 'check', 'format']
-        for keyword in validation_keywords:
-            if keyword in content_lower:
-                score += 1.0
-        
-        # Boost for validation flow
-        if chunk.primary_flow == FlowType.VALIDATION:
-            score += 3.0
-        elif FlowType.VALIDATION in chunk.secondary_flows:
-            score += 1.5
-        
-        # Boost for specific validation type
-        if validation_type and validation_type.lower() in content_lower:
-            score += 2.0
-        
-        # Boost for message type
-        if message_type and message_type.lower() in content_lower:
-            score += 2.0
-        
-        # Boost for field name
-        if field_name and field_name.lower() in content_lower:
-            score += 2.0
-        
-        return score
-    
-    def _calculate_error_handling_score(self, chunk: SearchableChunk, error_type: str = None) -> float:
-        """Calculate error handling relevance score."""
-        score = 0.0
-        content_lower = chunk.content.lower()
-        
-        # Base error handling score
-        error_keywords = ['error', 'exception', 'fault', 'fail', 'reject', 'return', 'repair']
-        for keyword in error_keywords:
-            if keyword in content_lower:
-                score += 1.0
-        
-        # Boost for exception handling flow
-        if chunk.primary_flow == FlowType.EXCEPTION_HANDLING:
-            score += 3.0
-        elif FlowType.EXCEPTION_HANDLING in chunk.secondary_flows:
-            score += 1.5
-        
-        # Boost for specific error type
-        if error_type and error_type.lower() in content_lower:
-            score += 2.0
-        
-        return score
-    
-    def _calculate_vector_similarity(self, vector1: List[float], vector2: List[float]) -> float:
-        """Calculate cosine similarity between two vectors."""
-        if not vector1 or not vector2 or len(vector1) != len(vector2):
-            return 0.0
-        
-        dot_product = sum(a * b for a, b in zip(vector1, vector2))
-        magnitude1 = math.sqrt(sum(a * a for a in vector1))
-        magnitude2 = math.sqrt(sum(a * a for a in vector2))
-        
-        if magnitude1 == 0 or magnitude2 == 0:
-            return 0.0
-        
-        return dot_product / (magnitude1 * magnitude2)
-    
-    # ===== UTILITY METHODS =====
-    
-    def print_search_results(self, results: List[Tuple[float, SearchableChunk]], 
-                            title: str = "Search Results",
-                            show_content: bool = False):
-        """Print search results in a formatted way."""
-        print(f"\n{'='*70}")
-        print(f"🔍 {title.upper()}")
-        print(f"{'='*70}")
-        
-        if not results:
-            print("No results found.")
-            return
-        
-        print(f"Found {len(results)} results:")
-        
-        for i, (score, chunk) in enumerate(results, 1):
-            print(f"\n{i}. 📄 {os.path.basename(chunk.source_file)}")
-            print(f"   🔧 Procedure: {chunk.procedure_name or 'None'}")
-            print(f"   📍 Lines: {chunk.start_line}-{chunk.end_line}")
-            print(f"   🎯 Flow: {chunk.flow_summary}")
-            print(f"   📊 Score: {score:.2f}")
+            with open(summary_file, 'w', encoding='utf-8') as f:
+                json.dump(summary, f, indent=2)
             
-            if chunk.detected_networks:
-                networks = [net.value.upper() for net in chunk.detected_networks]
-                print(f"   🌐 Networks: {', '.join(networks)}")
+            return True
             
-            if chunk.message_patterns:
-                print(f"   📨 Messages: {', '.join(chunk.message_patterns[:3])}")
-            
-            if show_content:
-                print(f"   📄 Content preview:")
-                lines = chunk.content.split('\n')[:3]
-                for line in lines:
-                    clean_line = line.strip()
-                    if clean_line:
-                        print(f"      {clean_line[:60]}{'...' if len(clean_line) > 60 else ''}")
+        except Exception as e:
+            print(f"❌ Error saving index: {e}")
+            return False
     
-    def save_search_results(self, results: List[Tuple[float, SearchableChunk]], 
-                           output_file: str = "search_results.json"):
-        """Save search results to a JSON file."""
-        result_data = []
+    def _print_results(self, elapsed_time, output_file):
+        """Print indexing results."""
+        print(f"\n{'='*60}")
+        print("✅ INDEXING COMPLETED SUCCESSFULLY")
+        print(f"{'='*60}")
         
-        for score, chunk in results:
-            result_data.append({
-                'score': score,
-                'source_file': chunk.source_file,
-                'procedure_name': chunk.procedure_name,
-                'start_line': chunk.start_line,
-                'end_line': chunk.end_line,
-                'flow_summary': chunk.flow_summary,
-                'detected_networks': [net.value for net in chunk.detected_networks],
-                'message_patterns': chunk.message_patterns,
-                'function_calls': chunk.function_calls[:5]  # First 5 function calls
-            })
+        print(f"⏱️  Processing time: {elapsed_time:.1f} seconds")
+        print(f"📁 Index file: {output_file}")
+        print(f"📋 Summary file: {output_file.replace('.pkl', '_summary.json')}")
         
-        with open(output_file, 'w', encoding='utf-8') as f:
-            json.dump(result_data, f, indent=2)
+        print(f"\n📊 Index Statistics:")
+        print(f"   Files processed: {self.stats['total_files']}")
+        print(f"   Code chunks: {self.stats['total_chunks']}")
+        print(f"   Procedures found: {self.stats['chunks_with_procedures']}")
+        print(f"   Chunks with flows: {self.stats['chunks_with_flows']}")
+        print(f"   Chunks with networks: {self.stats['chunks_with_networks']}")
+        print(f"   Vocabulary size: {self.stats['vocabulary_size']}")
         
-        print(f"💾 Search results saved to: {output_file}")
+        if self.stats['flow_distribution']:
+            print(f"\n🔄 Payment Flow Distribution:")
+            for flow, count in sorted(self.stats['flow_distribution'].items(), 
+                                    key=lambda x: x[1], reverse=True):
+                flow_name = flow.replace('_', ' ').title()
+                print(f"   {flow_name}: {count} chunks")
+        
+        if self.stats['network_distribution']:
+            print(f"\n🌐 Payment Network Distribution:")
+            for network, count in sorted(self.stats['network_distribution'].items(), 
+                                       key=lambda x: x[1], reverse=True):
+                print(f"   {network.upper()}: {count} chunks")
+        
+        print(f"\n🔍 Next Steps:")
+        print(f"   Use the searcher to explore your indexed code:")
+        print(f"   python payment_flow_searcher.py {output_file}")
+        
+        print(f"\n💡 Index ready for payment flow code discovery!")
 
 # ===== COMMAND LINE INTERFACE =====
 
 def main():
-    """Interactive command line interface for the searcher."""
-    print("="*70)
-    print("🔍 PAYMENT FLOW CORPUS SEARCHER")
-    print("="*70)
-    print("Interactive search for Federal Reserve, SWIFT, and CHIPS payment processing code")
+    """Main function for command line usage."""
+    print("="*60)
+    print("🏦 PAYMENT FLOW CODE INDEXER")
+    print("="*60)
+    print("Creates searchable indexes for TAL payment processing code")
     
-    # Get corpus file
+    # Get directory to index
     if len(sys.argv) > 1:
-        corpus_file = sys.argv[1]
+        directory = sys.argv[1]
     else:
-        corpus_file = input("\n📁 Enter corpus file path (.pkl): ").strip()
+        directory = input("\n📁 Enter directory to index: ").strip()
     
-    if not corpus_file or not os.path.exists(corpus_file):
-        print(f"❌ Corpus file not found: {corpus_file}")
-        return
+    if not directory or not os.path.exists(directory):
+        print(f"❌ Directory not found: {directory}")
+        return False
     
+    if not os.path.isdir(directory):
+        print(f"❌ Path is not a directory: {directory}")
+        return False
+    
+    # Get output file
+    if len(sys.argv) > 2:
+        output_file = sys.argv[2]
+    else:
+        dir_name = os.path.basename(os.path.abspath(directory))
+        default_output = f"payment_flow_index_{dir_name}.pkl"
+        output_file = input(f"📄 Output file (default: {default_output}): ").strip()
+        if not output_file:
+            output_file = default_output
+    
+    # Get file extensions
+    extensions_input = input("📝 File extensions (default: .tal,.c,.h): ").strip()
+    if extensions_input:
+        file_extensions = [ext.strip() for ext in extensions_input.split(',')]
+        file_extensions = [ext if ext.startswith('.') else '.' + ext for ext in file_extensions]
+    else:
+        file_extensions = ['.tal', '.TAL', '.c', '.h', '.cpp', '.hpp']
+    
+    # Get max features
     try:
-        # Initialize searcher
-        searcher = PaymentFlowSearcher(corpus_file)
-        
-        # Interactive search loop
-        while True:
-            print(f"\n{'='*50}")
-            print("🔍 SEARCH OPTIONS:")
-            print("1. Search by payment flow")
-            print("2. Search by payment network") 
-            print("3. Search by message type")
-            print("4. Search by procedure name")
-            print("5. Search by function calls")
-            print("6. Search by keywords")
-            print("7. Find validation patterns")
-            print("8. Find ISO message processing")
-            print("9. Find error handling patterns")
-            print("10. Find similar procedures")
-            print("11. Analyze flow coverage")
-            print("12. Show corpus statistics")
-            print("0. Exit")
-            
-            choice = input("\nSelect option (0-12): ").strip()
-            
-            if choice == '0':
-                break
-            elif choice == '1':
-                search_by_flow_interactive(searcher)
-            elif choice == '2':
-                search_by_network_interactive(searcher)
-            elif choice == '3':
-                search_by_message_interactive(searcher)
-            elif choice == '4':
-                search_by_procedure_interactive(searcher)
-            elif choice == '5':
-                search_by_function_interactive(searcher)
-            elif choice == '6':
-                search_by_keywords_interactive(searcher)
-            elif choice == '7':
-                search_validation_interactive(searcher)
-            elif choice == '8':
-                search_iso_interactive(searcher)
-            elif choice == '9':
-                search_error_handling_interactive(searcher)
-            elif choice == '10':
-                search_similar_procedures_interactive(searcher)
-            elif choice == '11':
-                analyze_coverage_interactive(searcher)
-            elif choice == '12':
-                show_statistics_interactive(searcher)
-            else:
-                print("❌ Invalid choice")
+        max_features = int(input("🔧 Max vocabulary size (default: 2000): ") or "2000")
+    except ValueError:
+        max_features = 2000
     
+    print(f"\n🚀 Starting indexing process...")
+    print(f"   📁 Directory: {directory}")
+    print(f"   📄 Output: {output_file}")
+    print(f"   📝 Extensions: {', '.join(file_extensions)}")
+    print(f"   🔧 Max features: {max_features}")
+    print(f"   🌿 NLP: {'Enhanced with NLTK' if NLTK_AVAILABLE else 'Basic'}")
+    
+    # Create indexer and run
+    try:
+        indexer = PaymentFlowIndexer(max_features=max_features)
+        success = indexer.index_directory(directory, file_extensions, output_file)
+        
+        if success:
+            return True
+        else:
+            print("❌ Indexing failed")
+            return False
+            
+    except KeyboardInterrupt:
+        print(f"\n\n⚠️  Indexing interrupted by user")
+        return False
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"\n❌ Indexing error: {e}")
         import traceback
         traceback.print_exc()
+        return False
 
-def search_by_flow_interactive(searcher: PaymentFlowSearcher):
-    """Interactive search by payment flow."""
-    print("\n🔄 Available payment flows:")
-    for i, flow in enumerate(FlowType, 1):
-        print(f"  {i}. {flow.value.replace('_', ' ').title()}")
+def create_index_from_config():
+    """Create index using a configuration file."""
+    config_file = input("📋 Enter config file path (JSON): ").strip()
+    
+    if not os.path.exists(config_file):
+        print(f"❌ Config file not found: {config_file}")
+        return False
     
     try:
-        choice = int(input("\nSelect flow (1-10): ")) - 1
-        flow_type = list(FlowType)[choice]
+        with open(config_file, 'r') as f:
+            config = json.load(f)
         
-        network_choice = input("Filter by network? (fedwire/swift/chips/enter for all): ").strip().lower()
-        network = None
-        if network_choice in ['fedwire', 'swift', 'chips']:
-            network = PaymentNetwork(network_choice)
+        directory = config['directory']
+        output_file = config.get('output_file', 'payment_flow_index.pkl')
+        file_extensions = config.get('file_extensions', ['.tal', '.c', '.h'])
+        max_features = config.get('max_features', 2000)
         
-        min_score = float(input("Minimum score (0.0-5.0, default 0.5): ") or "0.5")
-        top_k = int(input("Number of results (default 10): ") or "10")
+        print(f"📋 Using configuration:")
+        print(f"   Directory: {directory}")
+        print(f"   Output: {output_file}")
+        print(f"   Extensions: {file_extensions}")
+        print(f"   Max features: {max_features}")
         
-        results = searcher.search_by_flow(flow_type, network, min_score, top_k)
-        searcher.print_search_results(results, f"Payment Flow: {flow_type.value}")
+        indexer = PaymentFlowIndexer(max_features=max_features)
+        return indexer.index_directory(directory, file_extensions, output_file)
         
-        save = input("\nSave results to file? (y/n): ").strip().lower()
-        if save.startswith('y'):
-            filename = f"flow_search_{flow_type.value}.json"
-            searcher.save_search_results(results, filename)
-    
-    except (ValueError, IndexError):
-        print("❌ Invalid input")
+    except Exception as e:
+        print(f"❌ Config error: {e}")
+        return False
 
-def search_by_network_interactive(searcher: PaymentFlowSearcher):
-    """Interactive search by payment network."""
-    print("\n🌐 Available payment networks:")
-    for i, network in enumerate(PaymentNetwork, 1):
-        print(f"  {i}. {network.value.upper()}")
+def batch_index_multiple_directories():
+    """Index multiple directories in batch."""
+    print("📦 Batch indexing mode")
+    print("Enter directories to index (one per line, empty line to finish):")
+    
+    directories = []
+    while True:
+        directory = input("Directory: ").strip()
+        if not directory:
+            break
+        if os.path.exists(directory) and os.path.isdir(directory):
+            directories.append(directory)
+            print(f"   ✅ Added: {directory}")
+        else:
+            print(f"   ❌ Invalid: {directory}")
+    
+    if not directories:
+        print("❌ No valid directories provided")
+        return False
+    
+    # Get common settings
+    file_extensions = ['.tal', '.TAL', '.c', '.h', '.cpp', '.hpp']
+    max_features = 2000
+    
+    print(f"\n🚀 Batch indexing {len(directories)} directories...")
+    
+    success_count = 0
+    for i, directory in enumerate(directories, 1):
+        print(f"\n[{i}/{len(directories)}] Processing: {directory}")
+        
+        dir_name = os.path.basename(os.path.abspath(directory))
+        output_file = f"payment_flow_index_{dir_name}.pkl"
+        
+        try:
+            indexer = PaymentFlowIndexer(max_features=max_features)
+            if indexer.index_directory(directory, file_extensions, output_file):
+                success_count += 1
+                print(f"   ✅ Success: {output_file}")
+            else:
+                print(f"   ❌ Failed: {directory}")
+        except Exception as e:
+            print(f"   ❌ Error: {e}")
+    
+    print(f"\n📊 Batch indexing complete:")
+    print(f"   ✅ Successful: {success_count}/{len(directories)}")
+    print(f"   ❌ Failed: {len(directories) - success_count}/{len(directories)}")
+    
+    return success_count > 0
+
+def interactive_mode():
+    """Interactive indexing mode with menu."""
+    while True:
+        print(f"\n{'='*50}")
+        print("🏦 PAYMENT FLOW INDEXER - INTERACTIVE MODE")
+        print(f"{'='*50}")
+        print("1. Index single directory")
+        print("2. Index from configuration file") 
+        print("3. Batch index multiple directories")
+        print("4. View example configuration")
+        print("5. Test indexer with sample data")
+        print("0. Exit")
+        
+        choice = input("\nSelect option (0-5): ").strip()
+        
+        if choice == '0':
+            print("👋 Goodbye!")
+            break
+        elif choice == '1':
+            main()
+        elif choice == '2':
+            create_index_from_config()
+        elif choice == '3':
+            batch_index_multiple_directories()
+        elif choice == '4':
+            show_example_config()
+        elif choice == '5':
+            test_indexer_with_samples()
+        else:
+            print("❌ Invalid choice")
+
+def show_example_config():
+    """Show example configuration file."""
+    example_config = {
+        "directory": "/path/to/your/tal/code",
+        "output_file": "my_payment_index.pkl",
+        "file_extensions": [".tal", ".TAL", ".c", ".h"],
+        "max_features": 2000,
+        "description": "Index configuration for payment processing TAL code"
+    }
+    
+    print(f"\n📋 Example Configuration File (save as config.json):")
+    print("="*50)
+    print(json.dumps(example_config, indent=2))
+    print("="*50)
+    
+    save_example = input("\nSave example config to file? (y/n): ").strip().lower()
+    if save_example.startswith('y'):
+        with open('example_config.json', 'w') as f:
+            json.dump(example_config, f, indent=2)
+        print("✅ Saved to: example_config.json")
+
+def test_indexer_with_samples():
+    """Test the indexer with sample TAL code."""
+    import tempfile
+    
+    print("🧪 Creating sample TAL files for testing...")
+    
+    test_dir = tempfile.mkdtemp(prefix="tal_test_")
+    
+    # Sample TAL code
+    sample_code = """
+PROC VALIDATE_SWIFT_MT103(message_buffer);
+BEGIN
+    ! Validate SWIFT MT103 message format
+    INT validation_result := 1;
+    STRING bic_field[11];
+    STRING amount_field[15];
+    
+    ! Validate BIC code format
+    CALL EXTRACT_BIC_CODE(message_buffer, bic_field);
+    IF NOT VALIDATE_BIC_FORMAT(bic_field) THEN
+        validation_result := 0;
+        CALL LOG_VALIDATION_ERROR("Invalid BIC", bic_field);
+    END;
+    
+    ! Check OFAC sanctions screening
+    IF SCREEN_OFAC_LIST(message_buffer) = 0 THEN
+        validation_result := 0;
+        CALL HOLD_PAYMENT_FOR_REVIEW(message_buffer);
+    END;
+    
+    RETURN validation_result;
+END;
+
+PROC PROCESS_FEDWIRE_1000(wire_data);
+BEGIN
+    ! Process Fedwire type 1000 customer transfer
+    STRING imad[9];
+    STRING beneficiary_account[34];
+    
+    CALL GENERATE_IMAD(imad);
+    CALL EXTRACT_BENEFICIARY_ACCOUNT(wire_data, beneficiary_account);
+    
+    ! Validate account format
+    IF VALIDATE_ACCOUNT_NUMBER(beneficiary_account) THEN
+        CALL EXECUTE_WIRE_TRANSFER(wire_data, imad);
+    ELSE
+        CALL REJECT_WIRE_TRANSFER(imad, "Invalid account");
+    END;
+END;
+"""
+    
+    # Write sample file
+    sample_file = os.path.join(test_dir, "sample_payment_code.tal")
+    with open(sample_file, 'w') as f:
+        f.write(sample_code)
+    
+    print(f"   📄 Created: {sample_file}")
+    
+    # Index the sample
+    output_file = os.path.join(test_dir, "test_index.pkl")
     
     try:
-        choice = int(input("\nSelect network (1-4): ")) - 1
-        network = list(PaymentNetwork)[choice]
+        indexer = PaymentFlowIndexer(max_features=500)
+        success = indexer.index_directory(test_dir, ['.tal'], output_file)
         
-        flow_choice = input("Filter by flow? (validation/customer_transfer/etc, enter for all): ").strip().lower()
-        flow_type = None
-        if flow_choice:
-            try:
-                flow_type = FlowType(flow_choice)
-            except ValueError:
-                print(f"⚠️  Invalid flow type: {flow_choice}")
-        
-        top_k = int(input("Number of results (default 15): ") or "15")
-        
-        results = searcher.search_by_network(network, flow_type, top_k)
-        scored_results = [(1.0, chunk) for chunk in results]  # Add dummy scores
-        searcher.print_search_results(scored_results, f"Payment Network: {network.value.upper()}")
-    
-    except (ValueError, IndexError):
-        print("❌ Invalid input")
+        if success:
+            print(f"\n✅ Test indexing successful!")
+            print(f"📁 Test index: {output_file}")
+            print(f"🔍 Test with searcher:")
+            print(f"   python payment_flow_searcher.py {output_file}")
+            
+            # Clean up option
+            cleanup = input("\nDelete test files? (y/n): ").strip().lower()
+            if cleanup.startswith('y'):
+                import shutil
+                shutil.rmtree(test_dir)
+                print("🧹 Test files cleaned up")
+            else:
+                print(f"📁 Test files kept in: {test_dir}")
+        else:
+            print("❌ Test indexing failed")
+            
+    except Exception as e:
+        print(f"❌ Test error: {e}")
 
-def search_by_message_interactive(searcher: PaymentFlowSearcher):
-    """Interactive search by message type."""
-    message_type = input("\n📨 Enter message type (mt103, pacs008, fedwire_1000, etc.): ").strip()
-    if not message_type:
-        print("❌ Message type required")
-        return
-    
-    network_choice = input("Filter by network? (fedwire/swift/chips/enter for all): ").strip().lower()
-    network = None
-    if network_choice in ['fedwire', 'swift', 'chips']:
-        network = PaymentNetwork(network_choice)
-    
-    top_k = int(input("Number of results (default 10): ") or "10")
-    
-    results = searcher.search_by_message_type(message_type, network, top_k)
-    searcher.print_search_results(results, f"Message Type: {message_type}")
+# ===== UTILITY FUNCTIONS =====
 
-def search_by_procedure_interactive(searcher: PaymentFlowSearcher):
-    """Interactive search by procedure name."""
-    procedure = input("\n🔧 Enter procedure name pattern: ").strip()
-    if not procedure:
-        print("❌ Procedure pattern required")
-        return
+def validate_directory(directory_path):
+    """Validate directory and show file count."""
+    if not os.path.exists(directory_path):
+        return False, "Directory does not exist"
     
-    flow_choice = input("Filter by flow? (validation/customer_transfer/etc, enter for all): ").strip().lower()
-    flow_type = None
-    if flow_choice:
-        try:
-            flow_type = FlowType(flow_choice)
-        except ValueError:
-            print(f"⚠️  Invalid flow type: {flow_choice}")
+    if not os.path.isdir(directory_path):
+        return False, "Path is not a directory"
     
-    top_k = int(input("Number of results (default 10): ") or "10")
+    # Count files
+    file_count = 0
+    tal_count = 0
+    for root, dirs, files in os.walk(directory_path):
+        for file in files:
+            file_count += 1
+            if file.endswith(('.tal', '.TAL', '.c', '.h', '.cpp', '.hpp')):
+                tal_count += 1
     
-    results = searcher.search_by_procedure(procedure, flow_type, top_k)
-    searcher.print_search_results(results, f"Procedure: {procedure}")
+    if tal_count == 0:
+        return False, f"No TAL/C files found (total files: {file_count})"
+    
+    return True, f"Found {tal_count} TAL/C files (total: {file_count})"
 
-def search_by_function_interactive(searcher: PaymentFlowSearcher):
-    """Interactive search by function calls."""
-    function = input("\n📞 Enter function name pattern: ").strip()
-    if not function:
-        print("❌ Function pattern required")
-        return
+def estimate_processing_time(directory_path, file_extensions):
+    """Estimate processing time based on file count and size."""
+    total_size = 0
+    file_count = 0
     
-    flow_choice = input("Filter by flow? (validation/customer_transfer/etc, enter for all): ").strip().lower()
-    flow_type = None
-    if flow_choice:
-        try:
-            flow_type = FlowType(flow_choice)
-        except ValueError:
-            print(f"⚠️  Invalid flow type: {flow_choice}")
+    for root, dirs, files in os.walk(directory_path):
+        for file in files:
+            if any(file.endswith(ext) for ext in file_extensions):
+                file_path = os.path.join(root, file)
+                try:
+                    total_size += os.path.getsize(file_path)
+                    file_count += 1
+                except:
+                    pass
     
-    top_k = int(input("Number of results (default 10): ") or "10")
+    if file_count == 0:
+        return "No files to process"
     
-    results = searcher.search_by_function(function, flow_type, top_k)
-    searcher.print_search_results(results, f"Function: {function}")
+    # Rough estimation: ~1MB per minute
+    mb_size = total_size / (1024 * 1024)
+    estimated_minutes = max(0.1, mb_size * 0.5)  # Conservative estimate
+    
+    if estimated_minutes < 1:
+        return f"~{estimated_minutes*60:.0f} seconds ({file_count} files, {mb_size:.1f}MB)"
+    else:
+        return f"~{estimated_minutes:.1f} minutes ({file_count} files, {mb_size:.1f}MB)"
 
-def search_by_keywords_interactive(searcher: PaymentFlowSearcher):
-    """Interactive search by keywords."""
-    keywords_input = input("\n🔑 Enter keywords (comma-separated): ").strip()
-    if not keywords_input:
-        print("❌ Keywords required")
-        return
-    
-    keywords = [kw.strip() for kw in keywords_input.split(',')]
-    
-    flow_choice = input("Filter by flow? (validation/customer_transfer/etc, enter for all): ").strip().lower()
-    flow_type = None
-    if flow_choice:
-        try:
-            flow_type = FlowType(flow_choice)
-        except ValueError:
-            print(f"⚠️  Invalid flow type: {flow_choice}")
-    
-    network_choice = input("Filter by network? (fedwire/swift/chips/enter for all): ").strip().lower()
-    network = None
-    if network_choice in ['fedwire', 'swift', 'chips']:
-        network = PaymentNetwork(network_choice)
-    
-    top_k = int(input("Number of results (default 15): ") or "15")
-    
-    results = searcher.search_by_keywords(keywords, flow_type, network, top_k)
-    searcher.print_search_results(results, f"Keywords: {', '.join(keywords)}")
+def show_usage():
+    """Show usage instructions."""
+    print("""
+Usage Examples:
 
-def search_validation_interactive(searcher: PaymentFlowSearcher):
-    """Interactive search for validation patterns."""
-    validation_type = input("\n✅ Validation type (field/message/business/enter for all): ").strip()
-    message_type = input("Message type (pacs008/mt103/etc, enter for all): ").strip()
-    field_name = input("Field name (amount/bic/etc, enter for all): ").strip()
-    top_k = int(input("Number of results (default 10): ") or "10")
-    
-    results = searcher.find_validation_patterns(
-        validation_type if validation_type else None,
-        message_type if message_type else None, 
-        field_name if field_name else None,
-        top_k
-    )
-    searcher.print_search_results(results, "Validation Patterns", show_content=True)
+1. Basic indexing:
+   python payment_indexer.py /path/to/tal/code
 
-def search_iso_interactive(searcher: PaymentFlowSearcher):
-    """Interactive search for ISO message processing."""
-    print("\n📨 Available ISO message types:")
-    for i, msg_type in enumerate(ISOMessageType, 1):
-        print(f"  {i}. {msg_type.value}")
-    
-    try:
-        choice = int(input("\nSelect message type (1-11): ")) - 1
-        message_type = list(ISOMessageType)[choice]
-        
-        processing_stage = input("Processing stage (parse/validate/transform/enter for all): ").strip()
-        top_k = int(input("Number of results (default 10): ") or "10")
-        
-        results = searcher.find_iso_message_processing(
-            message_type,
-            processing_stage if processing_stage else None,
-            top_k
-        )
-        searcher.print_search_results(results, f"ISO Message: {message_type.value}", show_content=True)
-    
-    except (ValueError, IndexError):
-        print("❌ Invalid input")
+2. Specify output file:
+   python payment_indexer.py /path/to/tal/code my_index.pkl
 
-def search_error_handling_interactive(searcher: PaymentFlowSearcher):
-    """Interactive search for error handling patterns."""
-    error_type = input("\n⚠️  Error type (validation/timeout/reject/etc, enter for all): ").strip()
-    
-    network_choice = input("Filter by network? (fedwire/swift/chips/enter for all): ").strip().lower()
-    network = None
-    if network_choice in ['fedwire', 'swift', 'chips']:
-        network = PaymentNetwork(network_choice)
-    
-    top_k = int(input("Number of results (default 10): ") or "10")
-    
-    results = searcher.find_error_handling_patterns(
-        error_type if error_type else None,
-        network,
-        top_k
-    )
-    searcher.print_search_results(results, "Error Handling Patterns", show_content=True)
+3. Interactive mode:
+   python payment_indexer.py
 
-def search_similar_procedures_interactive(searcher: PaymentFlowSearcher):
-    """Interactive search for similar procedures."""
-    reference = input("\n🔧 Enter reference procedure name: ").strip()
-    if not reference:
-        print("❌ Reference procedure required")
-        return
-    
-    flow_choice = input("Filter by flow? (validation/customer_transfer/etc, enter for all): ").strip().lower()
-    flow_type = None
-    if flow_choice:
-        try:
-            flow_type = FlowType(flow_choice)
-        except ValueError:
-            print(f"⚠️  Invalid flow type: {flow_choice}")
-    
-    top_k = int(input("Number of results (default 5): ") or "5")
-    
-    results = searcher.find_similar_procedures(reference, flow_type, top_k)
-    searcher.print_search_results(results, f"Similar to: {reference}")
+4. Config file mode:
+   python payment_indexer.py --config config.json
 
-def analyze_coverage_interactive(searcher: PaymentFlowSearcher):
-    """Interactive flow coverage analysis."""
-    print("\n📊 Analyzing payment flow coverage...")
-    analysis = searcher.analyze_flow_coverage()
-    
-    print(f"\n{'='*50}")
-    print("📈 FLOW COVERAGE ANALYSIS")
-    print(f"{'='*50}")
-    
-    print(f"Total chunks: {analysis['total_chunks']}")
-    print(f"Chunks with flows: {analysis['chunks_with_flows']}")
-    print(f"Coverage rate: {analysis['chunks_with_flows']/analysis['total_chunks']*100:.1f}%")
-    
-    print(f"\n🔄 Flow Distribution:")
-    for flow, count in sorted(analysis['flow_distribution'].items(), key=lambda x: x[1], reverse=True):
-        flow_name = flow.replace('_', ' ').title()
-        print(f"  {flow_name}: {count} chunks")
-    
-    print(f"\n🌐 Network Distribution:")
-    for network, count in sorted(analysis['network_distribution'].items(), key=lambda x: x[1], reverse=True):
-        print(f"  {network.upper()}: {count} chunks")
-    
-    if analysis['coverage_gaps']:
-        print(f"\n⚠️  Coverage Gaps:")
-        for gap in analysis['coverage_gaps']:
-            print(f"  {gap}")
-    
-    print(f"\n📊 Flow-Network Matrix:")
-    print("Flow\\Network    Fedwire  SWIFT  CHIPS  General")
-    print("-" * 45)
-    for flow, networks in analysis['flow_network_matrix'].items():
-        flow_short = flow.replace('_', ' ').title()[:12].ljust(12)
-        fedwire = str(networks.get('fedwire', 0)).rjust(7)
-        swift = str(networks.get('swift', 0)).rjust(6)
-        chips = str(networks.get('chips', 0)).rjust(6)
-        general = str(networks.get('general', 0)).rjust(8)
-        print(f"{flow_short} {fedwire} {swift} {chips} {general}")
+5. Batch mode:
+   python payment_indexer.py --batch
 
-def show_statistics_interactive(searcher: PaymentFlowSearcher):
-    """Interactive corpus statistics display."""
-    print("\n📊 Generating corpus statistics...")
-    stats = searcher.get_corpus_statistics()
-    
-    print(f"\n{'='*50}")
-    print("📈 CORPUS STATISTICS")
-    print(f"{'='*50}")
-    
-    # Basic stats
-    basic = stats['basic_stats']
-    print(f"Total chunks: {basic['total_chunks']}")
-    print(f"Chunks with procedures: {basic['chunks_with_procedures']}")
-    print(f"Chunks with flows: {basic['chunks_with_flows']}")
-    print(f"Chunks with networks: {basic['chunks_with_networks']}")
-    
-    # Flow stats
-    print(f"\n🔄 Flow Statistics:")
-    for flow, data in sorted(stats['flow_stats'].items(), key=lambda x: x[1]['total_chunks'], reverse=True):
-        flow_name = flow.replace('_', ' ').title()
-        print(f"  {flow_name}: {data['total_chunks']} chunks (avg score: {data['avg_score']:.2f})")
-    
-    # Network stats
-    print(f"\n🌐 Network Statistics:")
-    for network, count in sorted(stats['network_stats'].items(), key=lambda x: x[1], reverse=True):
-        print(f"  {network.upper()}: {count} chunks")
-    
-    # Top message patterns
-    if stats['message_stats']:
-        print(f"\n📨 Top Message Patterns:")
-        for pattern, count in sorted(stats['message_stats'].items(), key=lambda x: x[1], reverse=True)[:10]:
-            print(f"  {pattern}: {count} chunks")
-    
-    # Top procedures
-    print(f"\n🔧 Top Procedures (by flow coverage):")
-    for proc, flow_count in stats['top_procedures'][:10]:
-        print(f"  {proc}: {flow_count} flows")
-    
-    # Top functions
-    print(f"\n📞 Top Function Calls:")
-    for func, count in stats['top_functions'][:10]:
-        print(f"  {func}(): {count} references")
+Command line options:
+  --help        Show this help
+  --config FILE Use configuration file
+  --batch       Batch index multiple directories
+  --interactive Interactive mode (default if no args)
+""")
 
 if __name__ == "__main__":
-    import sys
-    main()
+    try:
+        # Handle command line arguments
+        if len(sys.argv) > 1:
+            if sys.argv[1] in ['--help', '-h']:
+                show_usage()
+            elif sys.argv[1] == '--config':
+                create_index_from_config()
+            elif sys.argv[1] == '--batch':
+                batch_index_multiple_directories()
+            elif sys.argv[1] == '--interactive':
+                interactive_mode()
+            else:
+                # Standard directory indexing
+                main()
+        else:
+            # No arguments - interactive mode
+            interactive_mode()
+            
+    except KeyboardInterrupt:
+        print(f"\n\n⚠️  Process interrupted by user")
+    except Exception as e:
+        print(f"\n❌ Unexpected error: {e}")
+        import traceback
+        traceback.print_exc()
