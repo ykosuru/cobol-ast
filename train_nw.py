@@ -159,60 +159,138 @@ class WireProcessingFeatureExtractor:
 class StandaloneCorpusDataExtractor:
     """Extract training data using only built-in libraries."""
     
-    def __init__(self, corpus_path: str):
-        self.corpus_path = corpus_path
+    def __init__(self, corpus_paths):
+        # Handle both single string and list of paths
+        if isinstance(corpus_paths, str):
+            self.corpus_paths = [corpus_paths]
+        else:
+            self.corpus_paths = corpus_paths
+        
         self.chunks = []
         self.vectorizer_data = {}
         self.functionality_groups = {}
         self.feature_extractor = WireProcessingFeatureExtractor()
-        self.load_corpus()
+        self.corpus_metadata = {}
+        self.load_multiple_corpora()
     
-    def load_corpus(self):
-        """Load indexed corpus with error handling."""
-        print(f"📚 Loading indexed corpus from: {self.corpus_path}")
+    def load_multiple_corpora(self):
+        """Load multiple indexed corpora and combine them."""
+        print(f"📚 Loading {len(self.corpus_paths)} corpus files...")
         
         # Add SimpleChunk to global namespace for pickle compatibility
         import sys
         globals()['SimpleChunk'] = SimpleChunk
         sys.modules[__name__].SimpleChunk = SimpleChunk
         
-        try:
-            with open(self.corpus_path, 'rb') as f:
-                corpus_data = pickle.load(f)
+        all_chunks = []
+        combined_functionality_groups = defaultdict(list)
+        corpus_info = []
+        
+        for i, corpus_path in enumerate(self.corpus_paths):
+            print(f"   📖 Loading corpus {i+1}/{len(self.corpus_paths)}: {os.path.basename(corpus_path)}")
             
-            # Reconstruct chunks with error handling
-            for i, chunk_data in enumerate(corpus_data.get('chunks', [])):
-                try:
-                    # Handle both object and dictionary formats
-                    if hasattr(chunk_data, '__dict__'):
-                        chunk = chunk_data
-                    else:
-                        chunk = type('Chunk', (), {})()
-                        for key, value in chunk_data.items():
-                            setattr(chunk, key, value)
-                    
-                    # Ensure required attributes exist
-                    if not hasattr(chunk, 'semantic_category'):
-                        chunk.semantic_category = 'general_processing'
-                    if not hasattr(chunk, 'keywords'):
-                        chunk.keywords = []
-                    if not hasattr(chunk, 'function_calls'):
-                        chunk.function_calls = []
-                    
-                    self.chunks.append(chunk)
-                    
-                except Exception as e:
-                    print(f"⚠️  Warning: Error loading chunk {i}: {e}")
-                    continue
-            
-            self.vectorizer_data = corpus_data.get('vectorizer', {})
-            self.functionality_groups = corpus_data.get('functionality_groups', {})
-            
-            print(f"✅ Loaded {len(self.chunks)} chunks with rich metadata")
-            
-        except Exception as e:
-            print(f"❌ Error loading corpus: {e}")
-            raise
+            try:
+                with open(corpus_path, 'rb') as f:
+                    corpus_data = pickle.load(f)
+                
+                corpus_chunks = []
+                
+                # Reconstruct chunks with error handling
+                for j, chunk_data in enumerate(corpus_data.get('chunks', [])):
+                    try:
+                        # Handle both object and dictionary formats
+                        if hasattr(chunk_data, '__dict__'):
+                            chunk = chunk_data
+                        else:
+                            chunk = type('Chunk', (), {})()
+                            for key, value in chunk_data.items():
+                                setattr(chunk, key, value)
+                        
+                        # Ensure required attributes exist
+                        if not hasattr(chunk, 'semantic_category'):
+                            chunk.semantic_category = 'general_processing'
+                        if not hasattr(chunk, 'keywords'):
+                            chunk.keywords = []
+                        if not hasattr(chunk, 'function_calls'):
+                            chunk.function_calls = []
+                        
+                        # Add corpus source information
+                        chunk.corpus_source = os.path.basename(corpus_path)
+                        chunk.corpus_index = i
+                        
+                        corpus_chunks.append(chunk)
+                        
+                    except Exception as e:
+                        print(f"⚠️  Warning: Error loading chunk {j} from {corpus_path}: {e}")
+                        continue
+                
+                all_chunks.extend(corpus_chunks)
+                
+                # Combine functionality groups
+                func_groups = corpus_data.get('functionality_groups', {})
+                for group_type, groups in func_groups.items():
+                    if isinstance(groups, dict):
+                        for group_name, group_chunks in groups.items():
+                            combined_functionality_groups[f"{group_type}_{group_name}"].extend(group_chunks)
+                
+                # Store corpus metadata
+                corpus_info.append({
+                    'path': corpus_path,
+                    'version': corpus_data.get('version', 'unknown'),
+                    'created_at': corpus_data.get('created_at', 'unknown'),
+                    'chunk_count': len(corpus_chunks),
+                    'stats': corpus_data.get('stats', {})
+                })
+                
+                # Use vectorizer data from the first corpus (they should be compatible)
+                if i == 0:
+                    self.vectorizer_data = corpus_data.get('vectorizer', {})
+                
+                print(f"      ✅ Loaded {len(corpus_chunks)} chunks")
+                
+            except Exception as e:
+                print(f"      ❌ Error loading {corpus_path}: {e}")
+                continue
+        
+        self.chunks = all_chunks
+        self.functionality_groups = dict(combined_functionality_groups)
+        self.corpus_metadata = {
+            'combined_corpora': corpus_info,
+            'total_files': len(self.corpus_paths),
+            'successful_loads': len([info for info in corpus_info if info['chunk_count'] > 0])
+        }
+        
+        print(f"✅ Combined corpus loaded:")
+        print(f"   📦 Total chunks: {len(self.chunks)}")
+        print(f"   📁 Successful corpus files: {self.corpus_metadata['successful_loads']}/{len(self.corpus_paths)}")
+        
+        # Show corpus breakdown
+        if len(corpus_info) > 1:
+            print(f"   📊 Corpus breakdown:")
+            for info in corpus_info:
+                if info['chunk_count'] > 0:
+                    print(f"      {os.path.basename(info['path'])}: {info['chunk_count']} chunks")
+    
+    def get_corpus_statistics(self):
+        """Get statistics across all loaded corpora."""
+        stats = {
+            'total_chunks': len(self.chunks),
+            'corpus_sources': {},
+            'semantic_categories': {},
+            'combined_functionality_groups': len(self.functionality_groups)
+        }
+        
+        # Count chunks by source
+        for chunk in self.chunks:
+            source = getattr(chunk, 'corpus_source', 'unknown')
+            stats['corpus_sources'][source] = stats['corpus_sources'].get(source, 0) + 1
+        
+        # Count semantic categories
+        for chunk in self.chunks:
+            category = getattr(chunk, 'semantic_category', 'unknown')
+            stats['semantic_categories'][category] = stats['semantic_categories'].get(category, 0) + 1
+        
+        return stats
     
     def create_classification_dataset(self) -> Tuple[List[Dict], List[str], List[Dict]]:
         """Create feature vectors and labels for classification."""
@@ -320,8 +398,8 @@ class StandaloneCorpusDataExtractor:
 class CodeSnippetGenerator:
     """Generate TAL code snippets from developer questions."""
     
-    def __init__(self, corpus_path: str):
-        self.extractor = StandaloneCorpusDataExtractor(corpus_path)
+    def __init__(self, corpus_paths):
+        self.extractor = StandaloneCorpusDataExtractor(corpus_paths)
         self.template_library = {}
         self.pattern_library = {}
         self.build_code_libraries()
@@ -756,13 +834,37 @@ END;''',
 class StandaloneWireProcessingTrainer:
     """Train models using only scikit-learn - no external downloads."""
     
-    def __init__(self, corpus_path: str):
+    def __init__(self, corpus_paths):
         if not SKLEARN_AVAILABLE:
             raise ImportError("scikit-learn is required. Install with: pip install scikit-learn numpy")
         
-        self.extractor = StandaloneCorpusDataExtractor(corpus_path)
+        self.extractor = StandaloneCorpusDataExtractor(corpus_paths)
         self.models = {}
         self.vectorizers = {}
+    
+    def show_corpus_overview(self):
+        """Show overview of loaded corpora."""
+        stats = self.extractor.get_corpus_statistics()
+        
+        print(f"\n{'='*60}")
+        print("📊 COMBINED CORPUS OVERVIEW")
+        print("="*60)
+        print(f"Total chunks: {stats['total_chunks']}")
+        
+        if len(stats['corpus_sources']) > 1:
+            print(f"\n📁 Corpus Sources:")
+            for source, count in sorted(stats['corpus_sources'].items(), key=lambda x: x[1], reverse=True):
+                percentage = (count / stats['total_chunks']) * 100
+                print(f"   {source}: {count} chunks ({percentage:.1f}%)")
+        
+        print(f"\n🏷️ Semantic Categories:")
+        for category, count in sorted(stats['semantic_categories'].items(), key=lambda x: x[1], reverse=True)[:10]:
+            percentage = (count / stats['total_chunks']) * 100
+            print(f"   {category}: {count} chunks ({percentage:.1f}%)")
+        
+        print(f"\n🔗 Combined functionality groups: {stats['combined_functionality_groups']}")
+        
+        return stats
     
     def train_classification_model(self):
         """Train classification model using Random Forest."""
