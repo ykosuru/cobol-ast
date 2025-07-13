@@ -586,8 +586,8 @@ END;''',
         }
     
     def generate_code_snippet(self, question: str) -> Dict[str, Any]:
-        """Generate code snippet from developer question."""
-        print(f"🤖 Generating code for: '{question}'")
+        """Generate code snippet from developer question with enhanced explanations."""
+        print(f"🤖 Generating implementation for: '{question}'")
         
         # Analyze the question to determine intent and category
         intent_analysis = self.analyze_question_intent(question)
@@ -600,14 +600,209 @@ END;''',
             # Use template-based generation from corpus
             snippet = self.generate_from_templates(intent_analysis)
         
+        # Add implementation guidance
+        implementation_guidance = self.generate_implementation_guidance(intent_analysis, snippet)
+        
         return {
             'question': question,
             'generated_code': snippet['code'],
             'description': snippet['description'],
             'category': intent_analysis['category'],
             'confidence': intent_analysis['confidence'],
-            'suggestions': snippet.get('suggestions', [])
+            'suggestions': snippet.get('suggestions', []),
+            'implementation_steps': implementation_guidance['steps'],
+            'integration_notes': implementation_guidance['integration'],
+            'testing_approach': implementation_guidance['testing'],
+            'related_procedures': implementation_guidance['related']
         }
+    
+    def generate_implementation_guidance(self, intent_analysis: Dict[str, Any], snippet: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate comprehensive implementation guidance for developers."""
+        category = intent_analysis['category']
+        action_type = intent_analysis['action_type']
+        
+        guidance = {
+            'steps': [],
+            'integration': [],
+            'testing': [],
+            'related': []
+        }
+        
+        # Category-specific implementation steps
+        if category == 'swift_processing':
+            guidance['steps'] = [
+                "1. Set up SWIFT message parsing infrastructure",
+                "2. Implement BIC validation and lookup functions",
+                "3. Add message format validation (MT103, MT202, etc.)",
+                "4. Implement gpi UETR tracking if required",
+                "5. Add error handling for malformed messages"
+            ]
+            guidance['integration'] = [
+                "• Integrate with SWIFT Alliance Access or similar gateway",
+                "• Connect to BIC directory service for validation",
+                "• Link to your core payment processing system",
+                "• Set up message queuing for high-volume processing"
+            ]
+            guidance['testing'] = [
+                "• Test with sample SWIFT MT messages",
+                "• Validate BIC format checking",
+                "• Test error handling with malformed messages",
+                "• Performance test with message volumes"
+            ]
+            guidance['related'] = [
+                "EXTRACT_BIC_CODE", "VALIDATE_SWIFT_FORMAT", 
+                "LOG_SWIFT_ERROR", "EXECUTE_SWIFT_PROCESSING"
+            ]
+        
+        elif category == 'fedwire_operations':
+            guidance['steps'] = [
+                "1. Set up Fedwire type code processing",
+                "2. Implement IMAD/OMAD generation logic",
+                "3. Add Federal Reserve participant validation",
+                "4. Implement cutoff time checking",
+                "5. Add settlement and confirmation handling"
+            ]
+            guidance['integration'] = [
+                "• Connect to FedLine Advantage or similar Fed interface",
+                "• Integrate with your settlement accounting system",
+                "• Link to participant directory for validation",
+                "• Set up real-time status reporting"
+            ]
+            guidance['testing'] = [
+                "• Test IMAD/OMAD generation uniqueness",
+                "• Validate type code processing",
+                "• Test cutoff time handling",
+                "• Verify settlement confirmation processing"
+            ]
+            guidance['related'] = [
+                "GENERATE_IMAD", "GENERATE_OMAD", "VALIDATE_FEDWIRE_FORMAT",
+                "EXECUTE_FEDWIRE_TRANSFER"
+            ]
+        
+        elif category == 'ofac_screening':
+            guidance['steps'] = [
+                "1. Set up OFAC SDN list access and updates",
+                "2. Implement fuzzy matching algorithms",
+                "3. Add name normalization and cleansing",
+                "4. Implement scoring and threshold logic",
+                "5. Add review workflow for manual processing"
+            ]
+            guidance['integration'] = [
+                "• Connect to OFAC SDN list updates (daily/real-time)",
+                "• Integrate with case management system",
+                "• Link to transaction hold/release mechanisms",
+                "• Set up compliance reporting interfaces"
+            ]
+            guidance['testing'] = [
+                "• Test with known OFAC match scenarios",
+                "• Validate false positive handling",
+                "• Test performance with large transaction volumes",
+                "• Verify audit trail completeness"
+            ]
+            guidance['related'] = [
+                "CHECK_OFAC_LIST", "HOLD_FOR_OFAC_REVIEW",
+                "LOG_OFAC_HIT", "LOG_OFAC_CLEAR"
+            ]
+        
+        elif category == 'validation':
+            guidance['steps'] = [
+                "1. Define validation rules and business logic",
+                "2. Implement field-level format checking",
+                "3. Add cross-field validation rules",
+                "4. Implement business rule validation",
+                "5. Add comprehensive error reporting"
+            ]
+            guidance['integration'] = [
+                "• Integrate with your data dictionary/schema",
+                "• Connect to reference data services",
+                "• Link to error handling and notification systems",
+                "• Set up validation rule configuration"
+            ]
+            guidance['testing'] = [
+                "• Test each validation rule individually",
+                "• Test with valid and invalid data sets",
+                "• Verify error message clarity",
+                "• Performance test validation logic"
+            ]
+            guidance['related'] = [
+                "CHECK_FORMAT", "VALIDATE_BUSINESS_RULES",
+                "LOG_VALIDATION_ERROR", "FORMAT_ERROR_MESSAGE"
+            ]
+        
+        elif category == 'iso20022_processing':
+            guidance['steps'] = [
+                "1. Set up XML parsing and validation infrastructure",
+                "2. Implement ISO 20022 schema validation",
+                "3. Add business rule validation per message type",
+                "4. Implement message transformation logic",
+                "5. Add comprehensive error handling"
+            ]
+            guidance['integration'] = [
+                "• Connect to ISO 20022 schema repositories",
+                "• Integrate with XML processing libraries",
+                "• Link to your payment processing core",
+                "• Set up message routing and queuing"
+            ]
+            guidance['testing'] = [
+                "• Test with ISO 20022 sample messages",
+                "• Validate XML schema compliance",
+                "• Test business rule validation",
+                "• Performance test with large XML messages"
+            ]
+            guidance['related'] = [
+                "PARSE_ISO20022_XML", "VALIDATE_ISO20022_BUSINESS_RULES",
+                "EXECUTE_ISO20022_PAYMENT", "REJECT_ISO20022"
+            ]
+        
+        elif category == 'error_handling':
+            guidance['steps'] = [
+                "1. Define error codes and categories",
+                "2. Implement error logging and tracking",
+                "3. Add error recovery and retry logic",
+                "4. Implement escalation procedures",
+                "5. Add comprehensive error reporting"
+            ]
+            guidance['integration'] = [
+                "• Connect to centralized logging system",
+                "• Integrate with monitoring and alerting",
+                "• Link to case management for escalations",
+                "• Set up error analytics and reporting"
+            ]
+            guidance['testing'] = [
+                "• Test each error scenario individually",
+                "• Verify error recovery mechanisms",
+                "• Test escalation procedures",
+                "• Validate error reporting accuracy"
+            ]
+            guidance['related'] = [
+                "LOG_ERROR", "FORMAT_ERROR_MESSAGE", 
+                "REPAIR_DATA_ERROR", "ESCALATE_ERROR"
+            ]
+        
+        else:
+            # Generic guidance
+            guidance['steps'] = [
+                "1. Analyze business requirements thoroughly",
+                "2. Design the procedure interface and parameters",
+                "3. Implement core business logic",
+                "4. Add comprehensive error handling",
+                "5. Implement logging and monitoring"
+            ]
+            guidance['integration'] = [
+                "• Integrate with existing system architecture",
+                "• Connect to required data sources",
+                "• Link to downstream processing systems",
+                "• Set up monitoring and alerting"
+            ]
+            guidance['testing'] = [
+                "• Unit test individual components",
+                "• Integration test with related systems",
+                "• Performance test under load",
+                "• User acceptance testing"
+            ]
+            guidance['related'] = ["Related procedures will depend on your specific implementation"]
+        
+        return guidance
     
     def analyze_question_intent(self, question: str) -> Dict[str, Any]:
         """Analyze developer question to determine intent."""
