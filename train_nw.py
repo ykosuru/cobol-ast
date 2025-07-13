@@ -17,6 +17,31 @@ from typing import List, Dict, Tuple, Any
 from dataclasses import dataclass
 import pandas as pd
 
+# Add SimpleChunk class for pickle compatibility
+class SimpleChunk:
+    """Simple chunk class for pickle compatibility."""
+    def __init__(self, content="", source_file="", chunk_id=0, start_line=0, end_line=0, procedure_name=""):
+        self.content = content
+        self.source_file = source_file
+        self.chunk_id = chunk_id
+        self.start_line = start_line
+        self.end_line = end_line
+        self.procedure_name = procedure_name
+        self.raw_words = []
+        self.words = []
+        self.stemmed_words = []
+        self.word_count = 0
+        self.char_count = len(content)
+        self.function_calls = []
+        self.variable_declarations = []
+        self.control_structures = []
+        self.tfidf_vector = []
+        self.topic_distribution = []
+        self.dominant_topic = 0
+        self.dominant_topic_prob = 0.0
+        self.keywords = []
+        self.semantic_category = ""
+
 # ML/AI imports
 try:
     import torch
@@ -56,15 +81,40 @@ class TALCorpusDataExtractor:
         """Load your indexed corpus."""
         print(f"📚 Loading indexed corpus from: {self.corpus_path}")
         
+        # Add SimpleChunk to global namespace for pickle compatibility
+        import sys
+        globals()['SimpleChunk'] = SimpleChunk
+        sys.modules[__name__].SimpleChunk = SimpleChunk
+        
         with open(self.corpus_path, 'rb') as f:
             corpus_data = pickle.load(f)
         
-        # Reconstruct chunks (simplified)
-        for chunk_data in corpus_data['chunks']:
-            chunk = type('Chunk', (), {})()
-            for key, value in chunk_data.items():
-                setattr(chunk, key, value)
-            self.chunks.append(chunk)
+        # Reconstruct chunks with error handling
+        for i, chunk_data in enumerate(corpus_data.get('chunks', [])):
+            try:
+                # Handle both object and dictionary formats
+                if hasattr(chunk_data, '__dict__'):
+                    # It's already a SimpleChunk object
+                    chunk = chunk_data
+                else:
+                    # It's a dictionary, create a simple object
+                    chunk = type('Chunk', (), {})()
+                    for key, value in chunk_data.items():
+                        setattr(chunk, key, value)
+                
+                # Ensure required attributes exist
+                if not hasattr(chunk, 'semantic_category'):
+                    chunk.semantic_category = 'general_processing'
+                if not hasattr(chunk, 'keywords'):
+                    chunk.keywords = []
+                if not hasattr(chunk, 'function_calls'):
+                    chunk.function_calls = []
+                
+                self.chunks.append(chunk)
+                
+            except Exception as e:
+                print(f"⚠️  Warning: Error loading chunk {i}: {e}")
+                continue
         
         self.vectorizer_data = corpus_data.get('vectorizer', {})
         self.functionality_groups = corpus_data.get('functionality_groups', {})
