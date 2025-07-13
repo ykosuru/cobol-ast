@@ -752,6 +752,248 @@ END;''',
             return f"Screens for {category.replace('_', ' ')}"
         else:
             return f"Handles {category.replace('_', ' ')} functionality"
+
+class StandaloneWireProcessingTrainer:
+    """Train models using only scikit-learn - no external downloads."""
+    
+    def __init__(self, corpus_path: str):
+        if not SKLEARN_AVAILABLE:
+            raise ImportError("scikit-learn is required. Install with: pip install scikit-learn numpy")
+        
+        self.extractor = StandaloneCorpusDataExtractor(corpus_path)
+        self.models = {}
+        self.vectorizers = {}
+    
+    def train_classification_model(self):
+        """Train classification model using Random Forest."""
+        print("🏗️ Training wire processing classification model (standalone)...")
+        
+        # Get training data
+        features_list, labels, metadata_list = self.extractor.create_classification_dataset()
+        
+        if not features_list:
+            print("❌ No training data available")
+            return None
+        
+        # Analyze label distribution
+        label_counts = Counter(labels)
+        print(f"📊 Label distribution:")
+        for label, count in label_counts.most_common():
+            print(f"   {label}: {count} examples")
+        
+        # Prepare text features for TF-IDF
+        text_content = [features['content'] for features in features_list]
+        
+        # Remove content from feature dictionaries (will be handled by TF-IDF)
+        numerical_features = []
+        for features in features_list:
+            num_features = {k: v for k, v in features.items() if k != 'content'}
+            numerical_features.append(num_features)
+        
+        # Convert to arrays
+        feature_names = list(numerical_features[0].keys())
+        X_numerical = np.array([[features[name] for name in feature_names] 
+                               for features in numerical_features])
+        
+        # Create TF-IDF features
+        tfidf = TfidfVectorizer(max_features=500, stop_words='english', 
+                               ngram_range=(1, 2), min_df=2, max_df=0.8)
+        X_text = tfidf.fit_transform(text_content)
+        
+        # Combine numerical and text features
+        X_combined = np.hstack([X_numerical, X_text.toarray()])
+        y = np.array(labels)
+        
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(
+            X_combined, y, test_size=0.2, random_state=42, stratify=y
+        )
+        
+        print(f"📊 Training set: {len(X_train)} examples")
+        print(f"📊 Test set: {len(X_test)} examples")
+        
+        # Train multiple models and pick the best
+        models_to_try = {
+            'Random Forest': RandomForestClassifier(n_estimators=100, random_state=42),
+            'Logistic Regression': LogisticRegression(random_state=42, max_iter=1000),
+            'Naive Bayes': MultinomialNB(alpha=0.1)
+        }
+        
+        best_model = None
+        best_score = 0
+        best_name = ""
+        
+        for name, model in models_to_try.items():
+            print(f"\n🔧 Training {name}...")
+            
+            try:
+                model.fit(X_train, y_train)
+                
+                # Evaluate
+                train_score = model.score(X_train, y_train)
+                test_score = model.score(X_test, y_test)
+                
+                print(f"   Training accuracy: {train_score:.3f}")
+                print(f"   Test accuracy: {test_score:.3f}")
+                
+                if test_score > best_score:
+                    best_score = test_score
+                    best_model = model
+                    best_name = name
+                    
+            except Exception as e:
+                print(f"   ❌ Error training {name}: {e}")
+        
+        if best_model is None:
+            print("❌ No models trained successfully")
+            return None
+        
+        print(f"\n✅ Best model: {best_name} (accuracy: {best_score:.3f})")
+        
+        # Detailed evaluation of best model
+        y_pred = best_model.predict(X_test)
+        
+        print(f"\n📊 Detailed Classification Report:")
+        print(classification_report(y_test, y_pred))
+        
+        # Feature importance (if available)
+        if hasattr(best_model, 'feature_importances_'):
+            print(f"\n🔍 Top Features:")
+            feature_importance = best_model.feature_importances_
+            
+            # Combine feature names
+            all_feature_names = feature_names + [f"tfidf_{i}" for i in range(X_text.shape[1])]
+            
+            # Get top features
+            top_indices = np.argsort(feature_importance)[-10:][::-1]
+            for idx in top_indices:
+                if idx < len(all_feature_names):
+                    print(f"   {all_feature_names[idx]}: {feature_importance[idx]:.3f}")
+        
+        # Save model and metadata
+        model_data = {
+            'model': best_model,
+            'tfidf_vectorizer': tfidf,
+            'feature_names': feature_names,
+            'label_names': list(set(labels)),
+            'model_type': best_name,
+            'accuracy': best_score
+        }
+        
+        with open('standalone_classification_model.pkl', 'wb') as f:
+            pickle.dump(model_data, f)
+        
+        print(f"✅ Model saved to: standalone_classification_model.pkl")
+        
+        self.models['classification'] = model_data
+        return model_data
+    
+    def train_understanding_model(self):
+        """Train simple understanding model using similarity matching."""
+        print("🧠 Training understanding model (rule-based)...")
+        
+        examples = self.extractor.create_understanding_dataset()
+        
+        if not examples:
+            print("❌ No understanding examples available")
+            return None
+        
+        # Create a simple similarity-based understanding system
+        understanding_data = {
+            'examples': examples,
+            'vectorizer': TfidfVectorizer(max_features=200, stop_words='english')
+        }
+        
+        # Fit vectorizer on code examples
+        code_texts = [example[0] for example in examples]
+        understanding_data['code_vectors'] = understanding_data['vectorizer'].fit_transform(code_texts)
+        
+        # Save understanding model
+        with open('standalone_understanding_model.pkl', 'wb') as f:
+            pickle.dump(understanding_data, f)
+        
+        print(f"✅ Understanding model saved: standalone_understanding_model.pkl")
+        print(f"📊 {len(examples)} code-explanation pairs indexed")
+        
+        self.models['understanding'] = understanding_data
+        return understanding_data
+    
+    def test_classification_model(self, test_code: str):
+        """Test the classification model with sample code."""
+        if 'classification' not in self.models:
+            try:
+                with open('standalone_classification_model.pkl', 'rb') as f:
+                    self.models['classification'] = pickle.load(f)
+            except FileNotFoundError:
+                print("❌ No classification model found. Train first.")
+                return None
+        
+        model_data = self.models['classification']
+        model = model_data['model']
+        tfidf = model_data['tfidf_vectorizer']
+        feature_names = model_data['feature_names']
+        label_names = model_data['label_names']
+        
+        # Create a dummy chunk for feature extraction
+        test_chunk = type('TestChunk', (), {})()
+        test_chunk.content = test_code
+        test_chunk.procedure_name = ""
+        test_chunk.keywords = []
+        test_chunk.function_calls = []
+        test_chunk.word_count = len(test_code.split())
+        test_chunk.char_count = len(test_code)
+        
+        # Extract features
+        features = self.extractor.feature_extractor.extract_features(test_chunk)
+        
+        # Prepare features
+        X_numerical = np.array([[features.get(name, 0) for name in feature_names]])
+        X_text = tfidf.transform([test_code])
+        X_combined = np.hstack([X_numerical, X_text.toarray()])
+        
+        # Predict
+        prediction = model.predict(X_combined)[0]
+        probabilities = model.predict_proba(X_combined)[0] if hasattr(model, 'predict_proba') else None
+        
+        print(f"🎯 Predicted category: {prediction}")
+        if probabilities is not None:
+            confidence = max(probabilities)
+            print(f"🎯 Confidence: {confidence:.3f}")
+        
+        return prediction
+    
+    def test_understanding_model(self, test_code: str):
+        """Test the understanding model with sample code."""
+        if 'understanding' not in self.models:
+            try:
+                with open('standalone_understanding_model.pkl', 'rb') as f:
+                    self.models['understanding'] = pickle.load(f)
+            except FileNotFoundError:
+                print("❌ No understanding model found. Train first.")
+                return None
+        
+        model_data = self.models['understanding']
+        examples = model_data['examples']
+        vectorizer = model_data['vectorizer']
+        code_vectors = model_data['code_vectors']
+        
+        # Vectorize test code
+        test_vector = vectorizer.transform([test_code])
+        
+        # Find most similar code
+        from sklearn.metrics.pairwise import cosine_similarity
+        similarities = cosine_similarity(test_vector, code_vectors)[0]
+        best_match_idx = np.argmax(similarities)
+        
+        if similarities[best_match_idx] > 0.1:  # Minimum similarity threshold
+            explanation = examples[best_match_idx][1]
+            similarity = similarities[best_match_idx]
+            print(f"🧠 Explanation: {explanation}")
+            print(f"🎯 Similarity: {similarity:.3f}")
+            return explanation
+        else:
+            print("🧠 No similar code found in training data")
+            return "Code analysis: Unable to provide explanation based on training data."
     """Train models using only scikit-learn - no external downloads."""
     
     def __init__(self, corpus_path: str):
