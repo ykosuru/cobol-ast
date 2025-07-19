@@ -601,23 +601,41 @@ class FedPacs008Validator:
         
         # Sample problematic rows
         if all_issues:
-            print(f"\nSAMPLE PROBLEMATIC ROWS (First 10):")
+            print(f"\nSAMPLE PROBLEMATIC ROWS (First 10 with TRAN_ID):")
             print("-" * 80)
             
             for i, issue_data in enumerate(all_issues[:10], 1):
-                print(f"\n{i}. Row {issue_data['row']} (TRAN_ID: {issue_data['tran_id']}):")
+                severity_icon = "🔥" if len(issue_data['issues']) > 5 else "⚠️" if len(issue_data['issues']) > 2 else "ℹ️"
+                print(f"\n{i}. {severity_icon} Row {issue_data['row']} | TRAN_ID: '{issue_data['tran_id']}' | {len(issue_data['issues'])} issues:")
                 
-                # Group issues by type
+                # Group issues by type for better readability
                 critical = [issue for issue in issue_data['issues'] if 'REQUIRED' in issue or 'BUSINESS RULE' in issue]
-                format_errs = [issue for issue in issue_data['issues'] if 'Invalid' in issue or 'format' in issue]
+                format_errs = [issue for issue in issue_data['issues'] if any(keyword in issue for keyword in ['Invalid', 'format', 'Length', 'decimal', 'XML'])]
                 other = [issue for issue in issue_data['issues'] if issue not in critical and issue not in format_errs]
                 
-                for issue in critical:
-                    print(f"    ❌ {issue}")
-                for issue in format_errs:
-                    print(f"    ⚠️  {issue}")
-                for issue in other:
-                    print(f"    ℹ️  {issue}")
+                if critical:
+                    print(f"    🚨 CRITICAL ISSUES:")
+                    for issue in critical[:3]:  # Show max 3 critical issues
+                        print(f"       ❌ {issue}")
+                    if len(critical) > 3:
+                        print(f"       ❌ ... and {len(critical) - 3} more critical issues")
+                
+                if format_errs:
+                    print(f"    ⚠️  FORMAT ISSUES:")
+                    for issue in format_errs[:2]:  # Show max 2 format issues
+                        print(f"       🔧 {issue}")
+                    if len(format_errs) > 2:
+                        print(f"       🔧 ... and {len(format_errs) - 2} more format issues")
+                
+                if other:
+                    print(f"    ℹ️  OTHER ISSUES:")
+                    for issue in other[:2]:  # Show max 2 other issues
+                        print(f"       📝 {issue}")
+                    if len(other) > 2:
+                        print(f"       📝 ... and {len(other) - 2} more issues")
+            
+            if len(all_issues) > 10:
+                print(f"\n... and {len(all_issues) - 10} more problematic rows (see debugging summary below)")
         
         print(f"\nPACS.008 COMPLIANCE RECOMMENDATIONS:")
         print("-" * 60)
@@ -670,20 +688,33 @@ class FedPacs008Validator:
             df = pd.read_excel(file_path)
             logging.info(f"Loaded Excel file with {len(df)} rows and {len(df.columns)} columns")
             
+            print(f"\n🔍 DEBUGGING INFO - Processing {len(df)} rows...")
+            print("=" * 80)
+            
             # Analyze completeness
             completeness_report = self.analyze_data_completeness(df)
             
             # Validate each row
             all_issues = []
             issue_summary = {}
+            clean_rows = []
             
             for index, row in df.iterrows():
-                row_issues = self.validate_row(row, index + 1)
+                row_number = index + 1
+                tran_id = row.get('TRAN_ID', 'N/A')
+                
+                # Debug output for every row
+                print(f"📋 Processing Row {row_number:4d}: TRAN_ID = '{tran_id}'", end="")
+                
+                row_issues = self.validate_row(row, row_number)
                 
                 if row_issues:
+                    print(f" ❌ {len(row_issues)} issues found")
+                    print(f"    └─ Issues: {'; '.join(row_issues[:3])}{'...' if len(row_issues) > 3 else ''}")
+                    
                     all_issues.append({
-                        'row': index + 1,
-                        'tran_id': row.get('TRAN_ID', 'N/A'),
+                        'row': row_number,
+                        'tran_id': tran_id,
                         'issues': row_issues
                     })
                     
@@ -691,15 +722,101 @@ class FedPacs008Validator:
                     for issue in row_issues:
                         issue_type = issue.split(':')[0] if ':' in issue else issue
                         issue_summary[issue_type] = issue_summary.get(issue_type, 0) + 1
+                else:
+                    print(" ✅ Clean")
+                    clean_rows.append({'row': row_number, 'tran_id': tran_id})
+                
+                # Progress indicator for large files
+                if row_number % 100 == 0:
+                    print(f"\n📊 Progress: {row_number}/{len(df)} rows processed ({(row_number/len(df)*100):.1f}%)")
+            
+            print(f"\n🏁 Processing Complete!")
+            print(f"   ✅ Clean rows: {len(clean_rows)}")
+            print(f"   ❌ Rows with issues: {len(all_issues)}")
+            print("=" * 80)
             
             # Generate report
             self.generate_detailed_report(all_issues, issue_summary, len(df), completeness_report)
+            
+            # Additional debugging summary
+            self.print_debugging_summary(all_issues, clean_rows)
             
             return all_issues
             
         except Exception as e:
             logging.error(f"Error processing Excel file: {str(e)}")
+            print(f"❌ ERROR: {str(e)}")
             return None
+    
+    def print_debugging_summary(self, all_issues, clean_rows):
+        """Print additional debugging information"""
+        print(f"\n" + "="*80)
+        print("🐛 DEBUGGING SUMMARY")
+        print("="*80)
+        
+        if clean_rows:
+            print(f"\n✅ CLEAN ROWS (First 10):")
+            print("-" * 40)
+            for i, clean_row in enumerate(clean_rows[:10], 1):
+                print(f"   {i:2d}. Row {clean_row['row']:4d}: TRAN_ID = '{clean_row['tran_id']}'")
+            
+            if len(clean_rows) > 10:
+                print(f"   ... and {len(clean_rows) - 10} more clean rows")
+        
+        if all_issues:
+            print(f"\n❌ PROBLEMATIC ROWS (All {len(all_issues)} rows):")
+            print("-" * 50)
+            
+            # Group by TRAN_ID for duplicate detection
+            tran_id_groups = {}
+            for issue_data in all_issues:
+                tran_id = issue_data['tran_id']
+                if tran_id not in tran_id_groups:
+                    tran_id_groups[tran_id] = []
+                tran_id_groups[tran_id].append(issue_data)
+            
+            # Show duplicate TRAN_IDs if any
+            duplicates = {tid: rows for tid, rows in tran_id_groups.items() if len(rows) > 1}
+            if duplicates:
+                print(f"\n⚠️  DUPLICATE TRAN_IDs DETECTED:")
+                for tran_id, rows in duplicates.items():
+                    print(f"    TRAN_ID '{tran_id}' appears in rows: {[r['row'] for r in rows]}")
+            
+            # List all problematic rows
+            for i, issue_data in enumerate(all_issues, 1):
+                issue_count = len(issue_data['issues'])
+                severity = "🔥" if issue_count > 5 else "⚠️" if issue_count > 2 else "ℹ️"
+                
+                print(f"   {i:3d}. Row {issue_data['row']:4d}: TRAN_ID = '{issue_data['tran_id']}' {severity} ({issue_count} issues)")
+                
+                # Show first few issues for context
+                for j, issue in enumerate(issue_data['issues'][:2]):
+                    print(f"        • {issue}")
+                if issue_count > 2:
+                    print(f"        • ... and {issue_count - 2} more issues")
+        
+        # TRAN_ID analysis
+        print(f"\n📊 TRAN_ID ANALYSIS:")
+        print("-" * 30)
+        
+        all_tran_ids = []
+        for issue_data in all_issues:
+            all_tran_ids.append(issue_data['tran_id'])
+        for clean_row in clean_rows:
+            all_tran_ids.append(clean_row['tran_id'])
+        
+        unique_tran_ids = set(all_tran_ids)
+        null_tran_ids = sum(1 for tid in all_tran_ids if tid in ['N/A', '', 'nan', 'None'])
+        
+        print(f"   Total TRAN_IDs: {len(all_tran_ids)}")
+        print(f"   Unique TRAN_IDs: {len(unique_tran_ids)}")
+        print(f"   Duplicate TRAN_IDs: {len(all_tran_ids) - len(unique_tran_ids)}")
+        print(f"   Null/Empty TRAN_IDs: {null_tran_ids}")
+        
+        if null_tran_ids > 0:
+            print(f"\n⚠️  WARNING: {null_tran_ids} rows have missing TRAN_ID - this violates pacs.008 requirements!")
+        
+        print("="*80)
 
 # Usage
 def main():
