@@ -1,849 +1,510 @@
 import pandas as pd
-import requests
-from lxml import etree
-import xmlschema
-from datetime import datetime
-import logging
-import os
-import sys
-from decimal import Decimal
+import re
 import xml.etree.ElementTree as ET
+from typing import Dict, List, Tuple, Optional
+import sys
+from datetime import datetime
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+class PACS008XSDValidator:
+    """
+    Enhanced PACS.008.001.08 validator with XSD compliance and Federal Reserve requirements
+    """
+    
+    def __init__(self):
+        # XSD-based validation patterns from PACS.008.001.08
+        self.xsd_patterns = {
+            'Max35Text': r'^.{1,35}$',
+            'Max140Text': r'^.{1,140}$',
+            'Max15NumericText': r'^[0-9]{1,15}$',
+            'IBAN2007Identifier': r'^[A-Z]{2,2}[0-9]{2,2}[a-zA-Z0-9]{1,30}$',
+            'BICFIDec2014Identifier': r'^[A-Z0-9]{4,4}[A-Z]{2,2}[A-Z0-9]{2,2}([A-Z0-9]{3,3}){0,1}$',
+            'ActiveCurrencyCode': r'^[A-Z]{3,3}$',
+            'CountryCode': r'^[A-Z]{2,2}$',
+            'LEIIdentifier': r'^[A-Z0-9]{18,18}[0-9]{2,2}$',
+            'UUIDv4Identifier': r'^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$'
+        }
+        
+        # Valid enumeration values from XSD
+        self.valid_enums = {
+            'ChargeBearerType1Code': {'DEBT', 'CRED', 'SHAR', 'SLEV'},
+            'ClearingChannel2Code': {'RTGS', 'RTNS', 'MPNS', 'BOOK'},
+            'SettlementMethod1Code': {'INDA', 'INGA', 'COVE', 'CLRG'},
+            'Priority2Code': {'HIGH', 'NORM'},
+            'Priority3Code': {'URGT', 'HIGH', 'NORM'},
+            'CreditDebitCode': {'CRDT', 'DBIT'},
+            'AddressType2Code': {'ADDR', 'PBOX', 'HOME', 'BIZZ', 'MLTO', 'DLVY'},
+            'Instruction4Code': {'PHOA', 'TELA'},
+            'NamePrefix2Code': {'DOCT', 'MADM', 'MISS', 'MIST', 'MIKS'},
+            'PreferredContactMethod1Code': {'LETT', 'MAIL', 'PHON', 'FAXX', 'CELL'},
+            'RegulatoryReportingType1Code': {'CRED', 'DEBT', 'BOTH'},
+            'RemittanceLocationMethod2Code': {'FAXI', 'EDIC', 'URID', 'EMAL', 'POST', 'SMSM'},
+            'DocumentType3Code': {'RADM', 'RPIN', 'FXDR', 'DISP', 'PUOR', 'SCOR'},
+            'DocumentType6Code': {'MSIN', 'CNFA', 'DNFA', 'CINV', 'CREN', 'DEBN', 'HIRI', 'SBIN', 'CMCN', 'SOAC', 'DISP', 'BOLD', 'VCHR', 'AROI', 'TSUT', 'PUOR'},
+            'MandateClassification1Code': {'FIXE', 'USGB', 'VARI'},
+            'Frequency6Code': {'YEAR', 'MNTH', 'QURT', 'MIAN', 'WEEK', 'DAIL', 'ADHO', 'INDA', 'FRTN'},
+            'TaxRecordPeriod1Code': {'MM01', 'MM02', 'MM03', 'MM04', 'MM05', 'MM06', 'MM07', 'MM08', 'MM09', 'MM10', 'MM11', 'MM12', 'QTR1', 'QTR2', 'QTR3', 'QTR4', 'HLF1', 'HLF2'}
+        }
+        
+        # Federal Reserve specific validation for wire transfers
+        self.fed_wire_patterns = {
+            'FED_IMAD': r'^[0-9]{8}[0-9A-Z]{4}[0-9]{6}$',  # YYYYMMDDSSSSRRRRRR format
+            'FED_OMAD': r'^[0-9]{8}[0-9A-Z]{4}[0-9]{6}$',  # Same as IMAD format
+            'FED_ISN': r'^[A-Z0-9]{16}$',                   # 16 alphanumeric characters
+            'FED_OSN': r'^[A-Z0-9]{16}$'                    # 16 alphanumeric characters
+        }
+        
+        # External code restrictions from XSD (length limits)
+        self.external_codes = {
+            'ExternalAccountIdentification1Code': (1, 4),
+            'ExternalCashAccountType1Code': (1, 4),
+            'ExternalCashClearingSystem1Code': (1, 3),
+            'ExternalCategoryPurpose1Code': (1, 4),
+            'ExternalClearingSystemIdentification1Code': (1, 5),
+            'ExternalCreditorAgentInstruction1Code': (1, 4),
+            'ExternalDiscountAmountType1Code': (1, 4),
+            'ExternalDocumentLineType1Code': (1, 4),
+            'ExternalFinancialInstitutionIdentification1Code': (1, 4),
+            'ExternalGarnishmentType1Code': (1, 4),
+            'ExternalLocalInstrument1Code': (1, 35),
+            'ExternalMandateSetupReason1Code': (1, 4),
+            'ExternalOrganisationIdentification1Code': (1, 4),
+            'ExternalPersonIdentification1Code': (1, 4),
+            'ExternalProxyAccountType1Code': (1, 4),
+            'ExternalPurpose1Code': (1, 4),
+            'ExternalServiceLevel1Code': (1, 4),
+            'ExternalTaxAmountType1Code': (1, 4)
+        }
+        
+        # Your specific data element validation
+        self.valid_source_cd = {'FED', 'ACH', 'WIRE', 'BOOK', 'SWIFT'}
+        self.valid_instr_adv_type = {'FED', 'SWIFT', 'TELEX', 'PHONE', 'EMAIL'}
+        self.valid_tran_type = {'FTR', 'CHK', 'TRF', 'ACH', 'WIRE'}
+        self.valid_wire_type = {'FWI', 'COVER', 'BOOK', 'FEDWIRE'}
+        
+        # Required columns for validation
+        self.required_columns = [
+            'SOURCE_CD', 'INSTR_ADV_TYPE', 'TRAN_TYPE', 'WIRE_TYPE',
+            'FED_IMAD', 'FED_OMAD', 'FED_ISN', 'FED_OSN'
+        ]
 
-class TrueXSDPacs008Validator:
-    def __init__(self, xsd_file_path=None):
-        # Use provided XSD file path or default
-        self.xsd_file = xsd_file_path or "pacs.008.001.08.xsd"
-        self.schema = None
+    def validate_xsd_pattern(self, value: str, pattern_name: str) -> Tuple[bool, str]:
+        """Validate value against XSD pattern"""
+        if pattern_name not in self.xsd_patterns:
+            return True, ""
         
-        # CSV column order from your specification
-        self.expected_columns = [
-            'TRAN_ID', 'TXN_DATE', 'TDN_NUMBER', 'SBK_REF_NUM', 'PROC_DATE', 'PAY_DATE', 
-            'TXN_MEMO', 'SEND_DATE', 'REPETITIVE_ID', 'SOURCE_CD', 'INSTR_ADV_TYPE', 'STS_CD', 
-            'CAN_MOUNT_TYPE_CD', 'SUBTYPE_IN_TYPE_CD', 'IN_SUBTYPE', 'ISO20022_MSGTYPE_IN', 
-            'IS_COVER_PAYMENT', 'FED_IMAD', 'FED_OMAD', 'FED_ISN', 'FED_OSN', 'SWF_ISN', 
-            'SWF_OSN', 'CHP_ISN', 'CHP_OSN', 'CHP_SSN_1', 'CHP_SSN_6', 'SWF_IN_MIR', 
-            'SWF_OUT_MIR', 'ENTRY_PERSON', 'VERIFY_PERSON', 'REPAIR_PERSON', 'EXCEPT_PERSON', 
-            'WIRE_TYPE', 'STRAIGHT_THR_U', 'NETWORK_SND_IDTYPE', 'NETWORK_SND_ACC', 'RCV_DATE', 
-            'RCV_TIME', 'DLV_MEMO', 'DLVRY_PERSON', 'FEXCH_RATE_AMOUNT', 'CURRENCY_CODE', 
-            'FRONTIER_REF_NO', 'IDTYPE', 'CDT_ID', 'CDT_NAME1', 'CDT_NAME2', 'CDT_NAME3', 
-            'CDT_NAME4', 'CDT_ACCTG_IDTYPE', 'CDT_ACCTG_SLASH', 'CDT_ACCTG_ACCOUNT', 
-            'BBK_IDTYPE', 'BBK_ID', 'BBK_NAME1', 'BBK_NAME2', 'BBK_NAME3', 'BBK_NAME4', 
-            'IBK_IDTYPE', 'IBK_ID', 'IBK_NAME1', 'IBK_NAME2', 'IBK_NAME3', 'IBK_NAME4', 
-            'ORP_BEN_INF1', 'ORP_BEN_INF2', 'ORP_BEN_INF3', 'ORP_BEN_INF4', 'DBT_IDTYPE', 
-            'DBT_ID', 'DBT_NAME1', 'DBT_NAME_2', 'DBT_NAME_3', 'DBT_NAME_4', 'DBT_ACCTG_IDTYPE', 
-            'DBT_ACCTG_SLASH', 'DBT_ACCTG_ACCOUNT', 'SBK_IDTYPE', 'SBK_ID', 'SBK_NAME', 
-            'SBK_NAME2', 'SBK_NAME3', 'SBK_NAME4', 'OBK_IDTYPE', 'OBK_ID', 'OBK_NAME1', 
-            'OBK_NAME2', 'OBK_NAME3', 'OBK_NAME4', 'OBK_REF_NUM', 'ORP_IDTYPE', 'ORP_ID', 
-            'ORP_NAME1', 'ORP_NAME2', 'ORP_NAME3', 'ORP_NAME4', 'ORP_REF_NUM', 'FTR_EXP_STATE', 
-            'FTR_EXP_SUBSTATE'
-        ]
+        pattern = self.xsd_patterns[pattern_name]
+        if not re.match(pattern, str(value)):
+            return False, f"Value '{value}' does not match XSD pattern for {pattern_name}"
+        return True, ""
+
+    def validate_xsd_enum(self, value: str, enum_name: str) -> Tuple[bool, str]:
+        """Validate value against XSD enumeration"""
+        if enum_name not in self.valid_enums:
+            return True, ""
         
-        # Initialize the XSD schema
-        self.load_xsd_schema()
-    
-    def load_xsd_schema(self):
-        """Load the local pacs.008 XSD schema"""
-        print(f"📥 Loading local pacs.008.001.08 XSD schema from: {self.xsd_file}")
+        if value not in self.valid_enums[enum_name]:
+            valid_values = ', '.join(sorted(self.valid_enums[enum_name]))
+            return False, f"Invalid {enum_name} '{value}'. Valid values: {valid_values}"
+        return True, ""
+
+    def validate_external_code(self, value: str, code_type: str) -> Tuple[bool, str]:
+        """Validate external code length restrictions"""
+        if code_type not in self.external_codes:
+            return True, ""
         
+        min_len, max_len = self.external_codes[code_type]
+        if not (min_len <= len(value) <= max_len):
+            return False, f"{code_type} length must be between {min_len} and {max_len} characters"
+        return True, ""
+
+    def validate_decimal_format(self, value: str, total_digits: int, fraction_digits: int) -> Tuple[bool, str]:
+        """Validate decimal format according to XSD restrictions"""
         try:
-            # Check if XSD file exists
-            if not os.path.exists(self.xsd_file):
-                print(f"❌ XSD file not found: {self.xsd_file}")
-                print(f"💡 Please ensure you have downloaded the XSD file to: {os.path.abspath(self.xsd_file)}")
-                print(f"🌐 Download from: https://github.com/phoughton/pyiso20022/raw/main/xsd/payments_clearing_and_settlement/pacs.008/pacs.008.001.08.xsd")
-                self.schema = None
-                return
+            decimal_val = float(value)
+            if decimal_val < 0:
+                return False, f"Value must be non-negative"
             
-            print(f"📄 Found XSD file: {os.path.abspath(self.xsd_file)}")
-            print(f"📊 File size: {os.path.getsize(self.xsd_file)} bytes")
+            # Check total digits and fraction digits
+            str_val = str(decimal_val)
+            if '.' in str_val:
+                integer_part, fraction_part = str_val.split('.')
+                if len(fraction_part) > fraction_digits:
+                    return False, f"Maximum {fraction_digits} fraction digits allowed"
+                total_used = len(integer_part) + len(fraction_part)
+            else:
+                total_used = len(str_val)
             
-            # Load schema using xmlschema
-            self.schema = xmlschema.XMLSchema(self.xsd_file)
-            print(f"✅ XSD schema loaded successfully!")
-            print(f"   Schema target namespace: {self.schema.target_namespace}")
-            print(f"   Schema elements: {len(self.schema.elements)} root elements")
-            print(f"   Schema types: {len(self.schema.types)} defined types")
-            
-        except Exception as e:
-            print(f"❌ Error loading XSD schema: {str(e)}")
-            print(f"💡 Make sure the XSD file is valid and not corrupted")
-            self.schema = None
-    
-    def preprocess_csv_file(self, file_path):
-        """Preprocess Mac CSV file with ^M line endings"""
-        print(f"🔄 Preprocessing CSV file: {file_path}")
+            if total_used > total_digits:
+                return False, f"Maximum {total_digits} total digits allowed"
+                
+            return True, ""
+        except ValueError:
+            return False, f"Invalid decimal format"
+
+    def validate_fed_reference(self, value: str, ref_type: str) -> Tuple[bool, str]:
+        """Validate Federal Reserve reference number formats with enhanced rules"""
+        if pd.isna(value) or value == '':
+            return False, f"{ref_type} cannot be empty"
         
-        try:
-            # Read the raw file content
-            with open(file_path, 'rb') as f:
-                raw_content = f.read()
+        value = str(value).strip().upper()
+        
+        if ref_type in ['FED_IMAD', 'FED_OMAD']:
+            # Enhanced IMAD/OMAD validation: YYYYMMDDSSSSRRRRRR
+            if not re.match(self.fed_wire_patterns[ref_type], value):
+                return False, f"{ref_type} must follow YYYYMMDDSSSSRRRRRR format (18 characters: 8-digit date + 4-char sequence + 6-digit routing)"
             
-            # Handle encoding
+            # Validate date portion
+            date_part = value[:8]
             try:
-                content = raw_content.decode('utf-8')
-            except UnicodeDecodeError:
-                try:
-                    content = raw_content.decode('latin-1')
-                except UnicodeDecodeError:
-                    content = raw_content.decode('cp1252')
-            
-            # Handle Mac line endings
-            content = content.replace('\r\n', '\n').replace('\r', '\n')
-            lines = [line.strip() for line in content.split('\n') if line.strip()]
-            
-            print(f"📊 Found {len(lines)} non-empty lines")
-            
-            if len(lines) < 2:
-                raise ValueError("CSV file must have at least header and one data row")
-            
-            # Parse CSV
-            headers = [h.strip().strip('"') for h in lines[0].split(',')]
-            data_rows = []
-            
-            for line in lines[1:]:
-                values = [v.strip().strip('"') for v in line.split(',')]
-                while len(values) < len(headers):
-                    values.append('')
-                values = values[:len(headers)]
-                data_rows.append(values)
-            
-            df = pd.DataFrame(data_rows, columns=headers)
-            df = df.replace(['', 'NULL', 'null', 'N/A', 'n/a'], pd.NA)
-            
-            print(f"✅ Parsed {len(data_rows)} data rows with {len(headers)} columns")
-            return df
-            
-        except Exception as e:
-            print(f"❌ Error preprocessing CSV: {str(e)}")
-            return None
-    
-    def is_empty_or_null(self, value):
-        """Check if value is empty or null"""
-        if pd.isna(value):
-            return True
-        if value is None:
-            return True
-        if str(value).strip() == '' or str(value).strip().lower() in ['null', 'nan', 'none', 'n/a']:
-            return True
-        return False
-    
-    def clean_value(self, value):
-        """Clean value for XML generation"""
-        if self.is_empty_or_null(value):
-            return None
-        
-        value_str = str(value).strip()
-        
-        # XML escape special characters
-        value_str = value_str.replace('&', '&amp;')
-        value_str = value_str.replace('<', '&lt;')
-        value_str = value_str.replace('>', '&gt;')
-        value_str = value_str.replace('"', '&quot;')
-        value_str = value_str.replace("'", '&apos;')
-        
-        return value_str
-    
-    def concatenate_name_fields(self, name1, name2, name3, name4):
-        """Concatenate name fields with proper spacing"""
-        names = []
-        for name in [name1, name2, name3, name4]:
-            clean_name = self.clean_value(name)
-            if clean_name:
-                names.append(clean_name)
-        return ' '.join(names) if names else None
-    
-    def format_datetime(self, date_value):
-        """Format date/datetime for ISO 8601"""
-        if self.is_empty_or_null(date_value):
-            return None
-        
-        date_str = str(date_value).strip()
-        
-        # Try different date formats
-        formats = [
-            '%Y-%m-%d',
-            '%Y-%m-%dT%H:%M:%S',
-            '%m/%d/%Y',
-            '%d/%m/%Y',
-            '%Y/%m/%d'
-        ]
-        
-        for fmt in formats:
-            try:
-                dt = datetime.strptime(date_str, fmt)
-                return dt.strftime('%Y-%m-%dT%H:%M:%S')
+                datetime.strptime(date_part, '%Y%m%d')
             except ValueError:
-                continue
+                return False, f"{ref_type} contains invalid date: {date_part}"
+            
+            # Validate routing number portion (last 6 digits should be valid routing format)
+            routing_part = value[-6:]
+            if not routing_part.isdigit():
+                return False, f"{ref_type} routing portion must be 6 digits"
         
-        return date_str  # Return as-is if can't parse
-    
-    def format_date(self, date_value):
-        """Format date for ISO 8601 date only"""
-        if self.is_empty_or_null(date_value):
-            return None
+        elif ref_type in ['FED_ISN', 'FED_OSN']:
+            # ISN/OSN validation: 16 alphanumeric characters
+            if not re.match(self.fed_wire_patterns[ref_type], value):
+                return False, f"{ref_type} must be exactly 16 alphanumeric characters (A-Z, 0-9)"
         
-        date_str = str(date_value).strip()
+        return True, ""
+
+    def validate_amount_format(self, value: str) -> Tuple[bool, str]:
+        """Validate amount according to ActiveCurrencyAndAmount XSD type"""
+        return self.validate_decimal_format(value, 18, 5)
+
+    def validate_row(self, row: pd.Series, row_index: int) -> Dict:
+        """Enhanced row validation with XSD compliance"""
+        errors = []
+        warnings = []
         
-        formats = [
-            '%Y-%m-%d',
-            '%m/%d/%Y',
-            '%d/%m/%Y',
-            '%Y/%m/%d'
-        ]
+        # Check required columns
+        missing_columns = [col for col in self.required_columns if col not in row.index]
+        if missing_columns:
+            errors.append(f"Missing required columns: {', '.join(missing_columns)}")
+            return {
+                'row_index': row_index,
+                'is_valid': False,
+                'errors': errors,
+                'warnings': warnings
+            }
         
-        for fmt in formats:
-            try:
-                dt = datetime.strptime(date_str, fmt)
-                return dt.strftime('%Y-%m-%d')
-            except ValueError:
-                continue
+        # Validate SOURCE_CD against XSD Max35Text and custom enum
+        source_cd = str(row.get('SOURCE_CD', '')).strip().upper()
+        is_valid, error = self.validate_xsd_pattern(source_cd, 'Max35Text')
+        if not is_valid:
+            errors.append(f"SOURCE_CD XSD validation: {error}")
+        elif source_cd not in self.valid_source_cd:
+            errors.append(f"Invalid SOURCE_CD '{source_cd}'. Valid values: {', '.join(self.valid_source_cd)}")
         
-        return date_str
-    
-    def format_amount(self, amount_value):
-        """Format amount for pacs.008"""
-        if self.is_empty_or_null(amount_value):
-            return None
+        # Validate INSTR_ADV_TYPE
+        instr_adv_type = str(row.get('INSTR_ADV_TYPE', '')).strip().upper()
+        is_valid, error = self.validate_xsd_pattern(instr_adv_type, 'Max35Text')
+        if not is_valid:
+            errors.append(f"INSTR_ADV_TYPE XSD validation: {error}")
+        elif instr_adv_type not in self.valid_instr_adv_type:
+            errors.append(f"Invalid INSTR_ADV_TYPE '{instr_adv_type}'. Valid values: {', '.join(self.valid_instr_adv_type)}")
         
+        # Validate TRAN_TYPE
+        tran_type = str(row.get('TRAN_TYPE', '')).strip().upper()
+        is_valid, error = self.validate_xsd_pattern(tran_type, 'Max35Text')
+        if not is_valid:
+            errors.append(f"TRAN_TYPE XSD validation: {error}")
+        elif tran_type not in self.valid_tran_type:
+            errors.append(f"Invalid TRAN_TYPE '{tran_type}'. Valid values: {', '.join(self.valid_tran_type)}")
+        
+        # Validate WIRE_TYPE
+        wire_type = str(row.get('WIRE_TYPE', '')).strip().upper()
+        is_valid, error = self.validate_xsd_pattern(wire_type, 'Max35Text')
+        if not is_valid:
+            errors.append(f"WIRE_TYPE XSD validation: {error}")
+        elif wire_type not in self.valid_wire_type:
+            errors.append(f"Invalid WIRE_TYPE '{wire_type}'. Valid values: {', '.join(self.valid_wire_type)}")
+        
+        # Validate Federal Reserve reference numbers
+        for fed_field in ['FED_IMAD', 'FED_OMAD', 'FED_ISN', 'FED_OSN']:
+            is_valid, error_msg = self.validate_fed_reference(row.get(fed_field), fed_field)
+            if not is_valid:
+                errors.append(error_msg)
+        
+        # Cross-validation rules for PACS.008.001.08 Federal Reserve compliance
+        if source_cd == 'FED':
+            if wire_type not in ['FWI', 'FEDWIRE']:
+                warnings.append("Federal source requires FWI or FEDWIRE wire type")
+            if tran_type != 'FTR':
+                warnings.append("Federal source typically uses FTR transaction type")
+        
+        if tran_type == 'FTR' and source_cd != 'FED':
+            warnings.append("FTR transaction type typically requires FED source")
+        
+        if wire_type == 'FWI' and source_cd != 'FED':
+            warnings.append("FWI wire type typically requires FED source")
+        
+        # Additional XSD-based validations for optional fields if present
+        optional_validations = {
+            'CURRENCY_CODE': ('ActiveCurrencyCode', None),
+            'AMOUNT': ('amount_format', None),
+            'BIC_CODE': ('BICFIDec2014Identifier', None),
+            'IBAN': ('IBAN2007Identifier', None),
+            'COUNTRY_CODE': ('CountryCode', None),
+            'CHARGE_BEARER': (None, 'ChargeBearerType1Code'),
+            'CLEARING_CHANNEL': (None, 'ClearingChannel2Code'),
+            'SETTLEMENT_METHOD': (None, 'SettlementMethod1Code'),
+            'PRIORITY': (None, 'Priority3Code')
+        }
+        
+        for field, (pattern, enum) in optional_validations.items():
+            if field in row.index and pd.notna(row[field]) and str(row[field]).strip():
+                value = str(row[field]).strip().upper()
+                
+                if pattern == 'amount_format':
+                    is_valid, error = self.validate_amount_format(value)
+                    if not is_valid:
+                        warnings.append(f"{field}: {error}")
+                elif pattern:
+                    is_valid, error = self.validate_xsd_pattern(value, pattern)
+                    if not is_valid:
+                        warnings.append(f"{field}: {error}")
+                elif enum:
+                    is_valid, error = self.validate_xsd_enum(value, enum)
+                    if not is_valid:
+                        warnings.append(f"{field}: {error}")
+        
+        return {
+            'row_index': row_index,
+            'is_valid': len(errors) == 0,
+            'errors': errors,
+            'warnings': warnings
+        }
+
+    def validate_csv_file(self, file_path: str) -> Dict:
+        """Validate CSV file with enhanced error handling"""
         try:
-            # Clean amount value - remove currency symbols and formatting
-            clean_value = str(amount_value).replace(',', '').replace('$', '').replace('€', '').replace('£', '').replace('¥', '').strip()
+            print(f"Reading CSV file: {file_path}")
+            df = pd.read_csv(file_path)
+            print(f"Found {len(df)} rows and {len(df.columns)} columns")
+            print(f"Available columns: {', '.join(df.columns)}")
             
-            # Handle accounting format negatives
-            if clean_value.startswith('(') and clean_value.endswith(')'):
-                clean_value = '-' + clean_value[1:-1]
+            # Check if required columns exist
+            missing_columns = [col for col in self.required_columns if col not in df.columns]
+            if missing_columns:
+                return {
+                    'success': False,
+                    'error': f"CSV missing required columns: {', '.join(missing_columns)}",
+                    'available_columns': list(df.columns),
+                    'required_columns': self.required_columns
+                }
             
-            amount = Decimal(clean_value)
+            # Validate each row
+            print("Starting validation...")
+            results = []
+            valid_count = 0
             
-            # Format to max 5 decimal places
-            formatted = f"{amount:.5f}".rstrip('0').rstrip('.')
-            return formatted
+            for index, row in df.iterrows():
+                row_result = self.validate_row(row, index + 2)  # +2 for header and 0-based index
+                results.append(row_result)
+                if row_result['is_valid']:
+                    valid_count += 1
+                
+                # Progress indicator
+                if (index + 1) % 100 == 0:
+                    print(f"Processed {index + 1} rows...")
             
-        except Exception:
-            return str(amount_value)
-    
-    def determine_clearing_system(self, row_dict):
-        """Intelligently determine clearing system code based on other fields"""
-        source_cd = str(row_dict.get('SOURCE_CD', '')).strip().upper()
-        instr_adv_type = str(row_dict.get('INSTR_ADV_TYPE', '')).strip().upper()
-        wire_type = str(row_dict.get('WIRE_TYPE', '')).strip().upper()
-        
-        # Log the decision process
-        print(f"    🔍 Determining CLRG from: SOURCE_CD={source_cd}, INSTR_ADV_TYPE={instr_adv_type}, WIRE_TYPE={wire_type}")
-        
-        # Decision tree for clearing system
-        clearing_system = None
-        decision_reason = ""
-        
-        # Priority 1: INSTR_ADV_TYPE (most specific for settlement routing)
-        if instr_adv_type == 'CHP':
-            clearing_system = 'CHI'  # CHIPS
-            decision_reason = "INSTR_ADV_TYPE=CHP indicates CHIPS processing"
-        elif instr_adv_type == 'FED':
-            clearing_system = 'FDW'  # Fedwire
-            decision_reason = "INSTR_ADV_TYPE=FED indicates Fedwire processing"
-        
-        # Priority 2: WIRE_TYPE (if INSTR_ADV_TYPE not conclusive)
-        elif wire_type in ['CHO', 'CHP', 'CHIPS']:
-            clearing_system = 'CHI'  # CHIPS
-            decision_reason = f"WIRE_TYPE={wire_type} indicates CHIPS processing"
-        elif wire_type in ['FED', 'FEDWIRE', 'FDW']:
-            clearing_system = 'FDW'  # Fedwire
-            decision_reason = f"WIRE_TYPE={wire_type} indicates Fedwire processing"
-        elif wire_type in ['ACH', 'NACHA']:
-            clearing_system = 'ACH'  # ACH
-            decision_reason = f"WIRE_TYPE={wire_type} indicates ACH processing"
-        elif wire_type in ['RTP', 'RTN', 'REALTIME']:
-            clearing_system = 'RTP'  # Real-time payments
-            decision_reason = f"WIRE_TYPE={wire_type} indicates Real-time processing"
-        
-        # Priority 3: SOURCE_CD (fallback logic)
-        elif source_cd == 'RTN':
-            clearing_system = 'RTP'  # Real-time network
-            decision_reason = "SOURCE_CD=RTN indicates Real-time network"
-        elif source_cd == 'FED':
-            clearing_system = 'FDW'  # Fedwire
-            decision_reason = "SOURCE_CD=FED indicates Fedwire processing"
-        elif source_cd == 'SWF':
-            # SWIFT can route through different systems, need additional logic
-            # Check for CHIPS-specific indicators
-            if not self.is_empty_or_null(row_dict.get('CHP_ISN')) or not self.is_empty_or_null(row_dict.get('CHP_OSN')):
-                clearing_system = 'CHI'
-                decision_reason = "SOURCE_CD=SWF with CHIPS indicators"
-            else:
-                clearing_system = 'SWI'  # SWIFT
-                decision_reason = "SOURCE_CD=SWF indicates SWIFT processing"
-        
-        # Priority 4: Check for specific network sequence numbers
-        elif not self.is_empty_or_null(row_dict.get('CHP_ISN')) or not self.is_empty_or_null(row_dict.get('CHP_OSN')):
-            clearing_system = 'CHI'  # CHIPS
-            decision_reason = "CHIPS sequence numbers present"
-        elif not self.is_empty_or_null(row_dict.get('FED_IMAD')) or not self.is_empty_or_null(row_dict.get('FED_OMAD')):
-            clearing_system = 'FDW'  # Fedwire
-            decision_reason = "Fedwire IMAD/OMAD present"
-        elif not self.is_empty_or_null(row_dict.get('SWF_IN_MIR')) or not self.is_empty_or_null(row_dict.get('SWF_OUT_MIR')):
-            clearing_system = 'SWI'  # SWIFT
-            decision_reason = "SWIFT MIR present"
-        
-        # Default fallback
-        if not clearing_system:
-            clearing_system = 'CLRG'  # Generic clearing
-            decision_reason = "Default - insufficient data to determine specific system"
-        
-        print(f"    💡 CLRG Decision: {clearing_system} ({decision_reason})")
-        return clearing_system
-    
-    def determine_settlement_method(self, row_dict):
-        """Determine settlement method based on payment characteristics"""
-        source_cd = str(row_dict.get('SOURCE_CD', '')).strip().upper()
-        instr_adv_type = str(row_dict.get('INSTR_ADV_TYPE', '')).strip().upper()
-        is_cover_payment = str(row_dict.get('IS_COVER_PAYMENT', '')).strip().upper()
-        
-        # Cover payment logic
-        if is_cover_payment in ['TRUE', '1', 'YES', 'Y']:
-            return 'COVE'  # Cover method
-        
-        # Network-based settlement method
-        if instr_adv_type in ['CHP', 'FED'] or source_cd in ['FED', 'RTN']:
-            return 'CLRG'  # Clearing
-        elif source_cd == 'SWF':
-            # SWIFT can be either clearing or cover
-            if not self.is_empty_or_null(row_dict.get('CHP_ISN')) or not self.is_empty_or_null(row_dict.get('FED_IMAD')):
-                return 'CLRG'  # Clearing through domestic system
-            else:
-                return 'COVE'  # Cover method for international
-        
-        return 'CLRG'  # Default to clearing
-    
-    def csv_row_to_pacs008_xml(self, row, headers):
-        """Convert CSV row to pacs.008 XML format with intelligent field mapping"""
-        # Create row dictionary
-        row_dict = {header: (row[i] if i < len(row) else None) for i, header in enumerate(headers)}
-        
-        # Get TRAN_ID (first column)
-        tran_id = self.clean_value(row_dict.get('TRAN_ID', f'TXN{datetime.now().strftime("%Y%m%d%H%M%S")}'))
-        
-        print(f"    🔄 Converting CSV to pacs.008 XML...")
-        
-        # Intelligent field determination
-        clearing_system = self.determine_clearing_system(row_dict)
-        settlement_method = self.determine_settlement_method(row_dict)
-        
-        # Build XML structure
-        xml_parts = []
-        xml_parts.append('<?xml version="1.0" encoding="UTF-8"?>')
-        xml_parts.append('<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">')
-        xml_parts.append('  <FIToFICstmrCdtTrf>')
-        
-        # Group Header
-        xml_parts.append('    <GrpHdr>')
-        xml_parts.append(f'      <MsgId>{tran_id}</MsgId>')
-        
-        creation_datetime = self.format_datetime(row_dict.get('TXN_DATE'))
-        if creation_datetime:
-            xml_parts.append(f'      <CreDtTm>{creation_datetime}</CreDtTm>')
-        else:
-            xml_parts.append(f'      <CreDtTm>{datetime.now().strftime("%Y-%m-%dT%H:%M:%S")}</CreDtTm>')
-        
-        xml_parts.append('      <NbOfTxs>1</NbOfTxs>')
-        
-        # Settlement Information - ENHANCED with intelligent mapping
-        xml_parts.append('      <SttlmInf>')
-        xml_parts.append(f'        <SttlmMtd>{settlement_method}</SttlmMtd>')
-        
-        # Add clearing system if determined
-        if clearing_system and clearing_system != 'CLRG':
-            xml_parts.append('        <ClrSys>')
-            xml_parts.append(f'          <Cd>{clearing_system}</Cd>')
-            xml_parts.append('        </ClrSys>')
-        
-        # Add settlement account if available
-        settlement_account = self.clean_value(row_dict.get('NETWORK_SND_ACC'))
-        if settlement_account:
-            xml_parts.append('        <SttlmAcct>')
-            xml_parts.append('          <Id>')
-            xml_parts.append('            <Othr>')
-            xml_parts.append(f'              <Id>{settlement_account}</Id>')
-            xml_parts.append('            </Othr>')
-            xml_parts.append('          </Id>')
-            xml_parts.append('        </SttlmAcct>')
-        
-        xml_parts.append('      </SttlmInf>')
-        xml_parts.append('    </GrpHdr>')
-        
-        # Credit Transfer Transaction Information
-        xml_parts.append('    <CdtTrfTxInf>')
-        
-        # Payment Identification
-        xml_parts.append('      <PmtId>')
-        xml_parts.append(f'        <InstrId>{tran_id}</InstrId>')
-        
-        end_to_end_id = self.clean_value(row_dict.get('FRONTIER_REF_NO'))
-        if end_to_end_id:
-            xml_parts.append(f'        <EndToEndId>{end_to_end_id}</EndToEndId>')
-        
-        tx_id = self.clean_value(row_dict.get('TDN_NUMBER'))
-        if tx_id:
-            xml_parts.append(f'        <TxId>{tx_id}</TxId>')
-        
-        # Add UETR if available
-        uetr = self.clean_value(row_dict.get('SBK_REF_NUM'))
-        if uetr:
-            xml_parts.append(f'        <UETR>{uetr}</UETR>')
-        
-        xml_parts.append('      </PmtId>')
-        
-        # Interbank Settlement Amount
-        amount = self.format_amount(row_dict.get('FEXCH_RATE_AMOUNT'))
-        currency = self.clean_value(row_dict.get('CURRENCY_CODE', 'USD'))
-        
-        if amount and currency:
-            xml_parts.append(f'      <IntrBkSttlmAmt Ccy="{currency}">{amount}</IntrBkSttlmAmt>')
-        
-        # Settlement Date
-        settlement_date = self.format_date(row_dict.get('PROC_DATE'))
-        if settlement_date:
-            xml_parts.append(f'      <IntrBkSttlmDt>{settlement_date}</IntrBkSttlmDt>')
-        
-        # Debtor
-        debtor_name = self.concatenate_name_fields(
-            row_dict.get('DBT_NAME1'), row_dict.get('DBT_NAME_2'),
-            row_dict.get('DBT_NAME_3'), row_dict.get('DBT_NAME_4')
-        )
-        
-        if debtor_name:
-            xml_parts.append('      <Dbtr>')
-            xml_parts.append(f'        <Nm>{debtor_name}</Nm>')
-            xml_parts.append('      </Dbtr>')
-        
-        # Debtor Account
-        debtor_account = self.clean_value(row_dict.get('DBT_ACCTG_ACCOUNT'))
-        if debtor_account:
-            xml_parts.append('      <DbtrAcct>')
-            xml_parts.append('        <Id>')
-            xml_parts.append(f'          <Othr>')
-            xml_parts.append(f'            <Id>{debtor_account}</Id>')
-            xml_parts.append(f'          </Othr>')
-            xml_parts.append('        </Id>')
-            xml_parts.append('      </DbtrAcct>')
-        
-        # Debtor Agent
-        debtor_agent_bic = self.clean_value(row_dict.get('OBK_ID'))
-        debtor_agent_name = self.concatenate_name_fields(
-            row_dict.get('OBK_NAME1'), row_dict.get('OBK_NAME2'),
-            row_dict.get('OBK_NAME3'), row_dict.get('OBK_NAME4')
-        )
-        
-        if debtor_agent_bic or debtor_agent_name:
-            xml_parts.append('      <DbtrAgt>')
-            xml_parts.append('        <FinInstnId>')
-            if debtor_agent_bic:
-                xml_parts.append(f'          <BICFI>{debtor_agent_bic}</BICFI>')
-            if debtor_agent_name:
-                xml_parts.append(f'          <Nm>{debtor_agent_name}</Nm>')
-            xml_parts.append('        </FinInstnId>')
-            xml_parts.append('      </DbtrAgt>')
-        
-        # Creditor Agent
-        creditor_agent_bic = self.clean_value(row_dict.get('BBK_ID'))
-        creditor_agent_name = self.concatenate_name_fields(
-            row_dict.get('BBK_NAME1'), row_dict.get('BBK_NAME2'),
-            row_dict.get('BBK_NAME3'), row_dict.get('BBK_NAME4')
-        )
-        
-        if creditor_agent_bic or creditor_agent_name:
-            xml_parts.append('      <CdtrAgt>')
-            xml_parts.append('        <FinInstnId>')
-            if creditor_agent_bic:
-                xml_parts.append(f'          <BICFI>{creditor_agent_bic}</BICFI>')
-            if creditor_agent_name:
-                xml_parts.append(f'          <Nm>{creditor_agent_name}</Nm>')
-            xml_parts.append('        </FinInstnId>')
-            xml_parts.append('      </CdtrAgt>')
-        
-        # Creditor
-        creditor_name = self.concatenate_name_fields(
-            row_dict.get('CDT_NAME1'), row_dict.get('CDT_NAME2'),
-            row_dict.get('CDT_NAME3'), row_dict.get('CDT_NAME4')
-        )
-        
-        if creditor_name:
-            xml_parts.append('      <Cdtr>')
-            xml_parts.append(f'        <Nm>{creditor_name}</Nm>')
-            xml_parts.append('      </Cdtr>')
-        
-        # Creditor Account
-        creditor_account = self.clean_value(row_dict.get('CDT_ACCTG_ACCOUNT'))
-        if creditor_account:
-            xml_parts.append('      <CdtrAcct>')
-            xml_parts.append('        <Id>')
-            xml_parts.append(f'          <Othr>')
-            xml_parts.append(f'            <Id>{creditor_account}</Id>')
-            xml_parts.append(f'          </Othr>')
-            xml_parts.append('        </Id>')
-            xml_parts.append('      </CdtrAcct>')
-        
-        # Remittance Information
-        remittance_info = self.clean_value(row_dict.get('TXN_MEMO'))
-        if remittance_info:
-            xml_parts.append('      <RmtInf>')
-            xml_parts.append(f'        <Ustrd>{remittance_info}</Ustrd>')
-            xml_parts.append('      </RmtInf>')
-        
-        # Supplementary Data - Network specific information
-        xml_parts.append('      <SplmtryData>')
-        xml_parts.append('        <PlcAndNm>NetworkInfo</PlcAndNm>')
-        xml_parts.append('        <Envlp>')
-        xml_parts.append(f'          <SourceCode>{row_dict.get("SOURCE_CD", "")}</SourceCode>')
-        xml_parts.append(f'          <InstructionAdviceType>{row_dict.get("INSTR_ADV_TYPE", "")}</InstructionAdviceType>')
-        xml_parts.append(f'          <WireType>{row_dict.get("WIRE_TYPE", "")}</WireType>')
-        xml_parts.append(f'          <ClearingSystem>{clearing_system}</ClearingSystem>')
-        xml_parts.append('        </Envlp>')
-        xml_parts.append('      </SplmtryData>')
-        
-        xml_parts.append('    </CdtTrfTxInf>')
-        xml_parts.append('  </FIToFICstmrCdtTrf>')
-        xml_parts.append('</Document>')
-        
-        print(f"    ✅ XML generated with CLRG={clearing_system}, SttlmMtd={settlement_method}")
-        
-        return '\n'.join(xml_parts)
-    
-    def validate_xml_against_xsd(self, xml_content):
-        """Validate XML against the pacs.008 XSD schema"""
-        if not self.schema:
-            return False, ["XSD schema not loaded"]
-        
-        try:
-            # Parse XML
-            xml_doc = etree.fromstring(xml_content.encode('utf-8'))
+            total_rows = len(df)
+            invalid_count = total_rows - valid_count
             
-            # Validate against schema
-            self.schema.validate(xml_doc)
+            print(f"Validation complete: {valid_count}/{total_rows} rows valid")
             
-            return True, []
+            return {
+                'success': True,
+                'total_rows': total_rows,
+                'valid_rows': valid_count,
+                'invalid_rows': invalid_count,
+                'validation_rate': (valid_count / total_rows * 100) if total_rows > 0 else 0,
+                'results': results,
+                'summary': {
+                    'total_errors': sum(len(r['errors']) for r in results),
+                    'total_warnings': sum(len(r['warnings']) for r in results)
+                }
+            }
             
-        except xmlschema.XMLSchemaException as e:
-            return False, [f"XSD Validation Error: {str(e)}"]
-        except etree.XMLSyntaxError as e:
-            return False, [f"XML Syntax Error: {str(e)}"]
+        except FileNotFoundError:
+            return {
+                'success': False,
+                'error': f"File not found: {file_path}"
+            }
+        except pd.errors.EmptyDataError:
+            return {
+                'success': False,
+                'error': "CSV file is empty"
+            }
         except Exception as e:
-            return False, [f"Validation Error: {str(e)}"]
-    
-    def validate_csv_row_against_xsd(self, row, headers, row_index):
-        """Validate a CSV row by converting to XML and validating against XSD"""
-        tran_id = row[0] if len(row) > 0 else f'Row{row_index}'
-        
-        print(f"🔍 Row {row_index:4d}: TRAN_ID = '{tran_id}'")
-        
-        try:
-            # Convert CSV row to pacs.008 XML
-            xml_content = self.csv_row_to_pacs008_xml(row, headers)
-            
-            # Validate against XSD
-            is_valid, errors = self.validate_xml_against_xsd(xml_content)
-            
-            if is_valid:
-                print(f"    ✅ Row {row_index} is XSD compliant!")
-                return []
-            else:
-                print(f"    ❌ Row {row_index} has {len(errors)} XSD violations:")
-                for error in errors:
-                    print(f"       🚨 {error}")
-                return errors
-                
-        except Exception as e:
-            error_msg = f"XML Generation Error: {str(e)}"
-            print(f"    ❌ Row {row_index} XML generation failed:")
-            print(f"       🚨 {error_msg}")
-            return [error_msg]
-    
-    def process_csv_file(self, file_path):
-        """Main processing function"""
-        if not self.schema:
-            print("❌ Cannot proceed without valid XSD schema")
-            return None
-        
-        print("🚀 Starting TRUE XSD pacs.008 Validation")
-        print("="*80)
-        
-        # Preprocess CSV
-        df = self.preprocess_csv_file(file_path)
-        if df is None:
-            return None
-        
-        print(f"\n📊 Processing {len(df)} rows against pacs.008.001.08.xsd")
-        print("="*80)
-        
-        all_issues = []
-        
-        # Process each row
-        for index, row in df.iterrows():
-            row_values = row.tolist()
-            headers = df.columns.tolist()
-            
-            xsd_errors = self.validate_csv_row_against_xsd(row_values, headers, index + 1)
-            
-            if xsd_errors:
-                tran_id = row_values[0] if len(row_values) > 0 else f'Row{index + 1}'
-                all_issues.append({
-                    'row': index + 1,
-                    'tran_id': tran_id,
-                    'xsd_errors': xsd_errors
-                })
-        
-        # Generate final report
-        self.generate_xsd_report(all_issues, len(df))
-        
-        return all_issues
-    
-    def generate_xsd_report(self, all_issues, total_rows):
-        """Generate XSD validation report"""
-        print("\n" + "="*80)
-        print("📊 TRUE XSD VALIDATION REPORT - pacs.008.001.08")
-        print("="*80)
-        
-        print(f"\n📈 XSD VALIDATION RESULTS:")
-        print(f"   Total Rows Processed: {total_rows:,}")
-        print(f"   XSD Compliant Rows: {total_rows - len(all_issues):,}")
-        print(f"   XSD Violation Rows: {len(all_issues):,}")
-        print(f"   XSD Compliance Rate: {((total_rows - len(all_issues)) / total_rows * 100):.1f}%")
-        
-        if all_issues:
-            print(f"\n🚨 XSD VIOLATIONS BY TRAN_ID:")
-            print("-" * 60)
-            
-            for i, issue_data in enumerate(all_issues[:20], 1):  # Show first 20
-                print(f"   {i:2d}. Row {issue_data['row']:4d} | TRAN_ID: '{issue_data['tran_id']}' | {len(issue_data['xsd_errors'])} XSD errors")
-                
-                for error in issue_data['xsd_errors'][:3]:  # Show first 3 errors
-                    print(f"       🚨 {error}")
-                
-                if len(issue_data['xsd_errors']) > 3:
-                    print(f"       ... and {len(issue_data['xsd_errors']) - 3} more XSD errors")
-            
-            if len(all_issues) > 20:
-                print(f"\n   ... and {len(all_issues) - 20} more rows with XSD violations")
-        
-        print(f"\n🎯 XSD COMPLIANCE SUMMARY:")
-        print("   ✅ XSD compliant rows can be processed as valid pacs.008 messages")
-        print("   ❌ XSD violation rows must be fixed before Fed processing")
-        print("   🚨 All errors are based on official pacs.008.001.08.xsd schema")
-        print("   📋 Fix XSD violations to ensure Fed ISO 20022 compliance")
-        
-        print("="*80)
+            return {
+                'success': False,
+                'error': f"Error processing CSV file: {str(e)}"
+            }
 
-# Interactive input functions
-def get_csv_filename():
-    """Get CSV filename from user input"""
-    while True:
-        csv_file = input("\n📄 Enter CSV filename (or full path): ").strip()
+    def generate_detailed_report(self, validation_results: Dict, output_file: Optional[str] = None) -> str:
+        """Generate comprehensive validation report"""
+        if not validation_results.get('success'):
+            return f"Validation failed: {validation_results.get('error', 'Unknown error')}"
         
-        if not csv_file:
-            print("❌ Please enter a filename")
-            continue
+        report_lines = []
+        report_lines.append("PACS.008.001.08 XSD Compliance Validation Report")
+        report_lines.append("=" * 55)
+        report_lines.append(f"Validation Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        report_lines.append("")
         
-        # Add .csv extension if not provided
-        if not csv_file.lower().endswith('.csv'):
-            csv_file += '.csv'
+        # Summary statistics
+        report_lines.append("SUMMARY STATISTICS")
+        report_lines.append("-" * 20)
+        report_lines.append(f"Total rows processed: {validation_results['total_rows']:,}")
+        report_lines.append(f"Valid rows: {validation_results['valid_rows']:,}")
+        report_lines.append(f"Invalid rows: {validation_results['invalid_rows']:,}")
+        report_lines.append(f"Validation rate: {validation_results['validation_rate']:.2f}%")
+        report_lines.append(f"Total errors: {validation_results['summary']['total_errors']:,}")
+        report_lines.append(f"Total warnings: {validation_results['summary']['total_warnings']:,}")
+        report_lines.append("")
         
-        # Check if file exists
-        if os.path.exists(csv_file):
-            print(f"✅ Found CSV file: {os.path.abspath(csv_file)}")
-            return csv_file
+        # Error analysis
+        if validation_results['invalid_rows'] > 0:
+            error_counts = {}
+            warning_counts = {}
+            
+            for result in validation_results['results']:
+                for error in result['errors']:
+                    error_type = error.split(':')[0] if ':' in error else error
+                    error_counts[error_type] = error_counts.get(error_type, 0) + 1
+                for warning in result['warnings']:
+                    warning_type = warning.split(':')[0] if ':' in warning else warning
+                    warning_counts[warning_type] = warning_counts.get(warning_type, 0) + 1
+            
+            if error_counts:
+                report_lines.append("ERROR FREQUENCY ANALYSIS")
+                report_lines.append("-" * 25)
+                for error_type, count in sorted(error_counts.items(), key=lambda x: x[1], reverse=True):
+                    report_lines.append(f"{error_type}: {count:,} occurrences")
+                report_lines.append("")
+            
+            if warning_counts:
+                report_lines.append("WARNING FREQUENCY ANALYSIS")
+                report_lines.append("-" * 27)
+                for warning_type, count in sorted(warning_counts.items(), key=lambda x: x[1], reverse=True):
+                    report_lines.append(f"{warning_type}: {count:,} occurrences")
+                report_lines.append("")
+        
+        # Detailed errors (first 50 to avoid huge reports)
+        if validation_results['invalid_rows'] > 0:
+            report_lines.append("DETAILED VALIDATION ISSUES (First 50)")
+            report_lines.append("-" * 40)
+            
+            count = 0
+            for result in validation_results['results']:
+                if not result['is_valid'] and count < 50:
+                    report_lines.append(f"Row {result['row_index']}:")
+                    for error in result['errors']:
+                        report_lines.append(f"  ERROR: {error}")
+                    for warning in result['warnings']:
+                        report_lines.append(f"  WARNING: {warning}")
+                    report_lines.append("")
+                    count += 1
+            
+            if validation_results['invalid_rows'] > 50:
+                report_lines.append(f"... and {validation_results['invalid_rows'] - 50} more invalid rows")
+                report_lines.append("")
+        
+        # Recommendations
+        report_lines.append("RECOMMENDATIONS")
+        report_lines.append("-" * 15)
+        
+        if validation_results['validation_rate'] == 100:
+            report_lines.append("✓ All rows passed validation! Your data is compliant with PACS.008.001.08 XSD.")
+        elif validation_results['validation_rate'] >= 95:
+            report_lines.append("• Excellent compliance rate. Review and fix the few remaining issues.")
+        elif validation_results['validation_rate'] >= 80:
+            report_lines.append("• Good compliance rate. Focus on the most frequent error types first.")
         else:
-            print(f"❌ File not found: {os.path.abspath(csv_file)}")
-            retry = input("🔄 Try again? (y/n): ").strip().lower()
-            if retry != 'y':
-                return None
+            report_lines.append("• Significant validation issues detected. Systematic review required.")
+            report_lines.append("• Consider reviewing data source and validation processes.")
+        
+        report_lines.append("• Ensure Federal Reserve reference numbers follow exact format requirements.")
+        report_lines.append("• Verify all enumerated values match XSD specifications.")
+        report_lines.append("• Cross-check business logic rules for FED wire transfers.")
+        
+        report = "\n".join(report_lines)
+        
+        if output_file:
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(report)
+            print(f"Detailed report saved to: {output_file}")
+        
+        return report
 
-def get_xsd_filename():
-    """Get XSD filename from user input"""
-    while True:
-        print("\n📋 XSD File Options:")
-        print("1. Use default: pacs.008.001.08.xsd (in current directory)")
-        print("2. Enter custom XSD file path")
-        
-        choice = input("Choose option (1 or 2): ").strip()
-        
-        if choice == '1':
-            xsd_file = "pacs.008.001.08.xsd"
-        elif choice == '2':
-            xsd_file = input("📄 Enter XSD filename (or full path): ").strip()
-            if not xsd_file:
-                print("❌ Please enter a filename")
-                continue
-        else:
-            print("❌ Invalid choice. Please enter 1 or 2")
-            continue
-        
-        # Check if file exists
-        if os.path.exists(xsd_file):
-            print(f"✅ Found XSD file: {os.path.abspath(xsd_file)}")
-            return xsd_file
-        else:
-            print(f"❌ XSD file not found: {os.path.abspath(xsd_file)}")
-            print(f"💡 Download from: https://github.com/phoughton/pyiso20022/raw/main/xsd/payments_clearing_and_settlement/pacs.008/pacs.008.001.08.xsd")
-            retry = input("🔄 Try again? (y/n): ").strip().lower()
-            if retry != 'y':
-                return None
 
-# Main functions
 def main():
-    """Interactive mode - prompts user for files"""
-    print("🚀 TRUE XSD pacs.008.001.08 Validator")
-    print("="*60)
-    print("📄 Uses official ISO 20022 XSD schema")
-    print("🔍 Converts CSV to XML and validates against XSD")
-    print("📋 Handles Mac CSV files with ^M line endings")
-    print("🧠 Intelligent field mapping for CLRG determination")
+    """Enhanced main function with user input and better error handling"""
+    print("PACS.008.001.08 XSD Compliance Validator")
+    print("=" * 40)
+    print("This validator checks your CSV data against:")
+    print("• ISO 20022 PACS.008.001.08 XSD schema requirements")
+    print("• Federal Reserve Fedwire format specifications")
+    print("• Business logic rules for wire transfers")
+    print()
     
-    # Get XSD file
-    print("\n" + "="*60)
-    print("STEP 1: XSD SCHEMA FILE")
-    print("="*60)
-    xsd_file = get_xsd_filename()
-    if not xsd_file:
-        print("❌ Cannot proceed without XSD file. Exiting.")
-        return
+    # Get CSV file path from user
+    while True:
+        csv_file_path = input("Enter the path to your CSV file: ").strip()
+        if csv_file_path:
+            # Remove quotes if present
+            csv_file_path = csv_file_path.strip('"\'')
+            break
+        print("Please enter a valid file path.")
     
-    # Get CSV file
-    print("\n" + "="*60)
-    print("STEP 2: CSV DATA FILE") 
-    print("="*60)
-    csv_file = get_csv_filename()
-    if not csv_file:
-        print("❌ Cannot proceed without CSV file. Exiting.")
-        return
+    # Initialize validator
+    validator = PACS008XSDValidator()
     
-    # Initialize validator with local XSD
-    print("\n" + "="*60)
-    print("STEP 3: INITIALIZING VALIDATOR")
-    print("="*60)
-    print(f"🔧 Loading XSD schema from: {xsd_file}")
-    print(f"📊 Preparing to process CSV: {csv_file}")
+    print("\nStarting validation...")
+    print("-" * 25)
     
-    validator = TrueXSDPacs008Validator(xsd_file)
+    # Validate CSV file
+    results = validator.validate_csv_file(csv_file_path)
     
-    # Check if schema loaded successfully
-    if not validator.schema:
-        print("❌ Failed to load XSD schema. Cannot proceed.")
-        print("💡 Make sure you have the correct pacs.008.001.08.xsd file")
-        return
-    
-    # Process the CSV file
-    print("\n" + "="*60)
-    print("STEP 4: VALIDATION PROCESS")
-    print("="*60)
-    print(f"🚀 Starting validation of {csv_file}")
-    print("🧠 Using intelligent CLRG field determination")
-    
-    issues = validator.process_csv_file(csv_file)
-    
-    # Final results
-    print("\n" + "="*60)
-    print("FINAL RESULTS")
-    print("="*60)
-    
-    if issues is not None:
-        if len(issues) == 0:
-            print("🎉 SUCCESS! All rows are XSD compliant!")
-            print("✅ Your data is ready for Fed ISO 20022 processing")
-            print("📤 Generated XML messages will pass XSD validation")
-        else:
-            print(f"⚠️  PARTIAL SUCCESS: {len(issues)} rows have XSD violations")
-            print("🔧 Fix the reported issues for full compliance")
-            print("📋 Review the detailed report above for specific problems")
+    if results['success']:
+        # Generate and display report
+        report_filename = f"pacs008_validation_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        report = validator.generate_detailed_report(results, report_filename)
         
-        print(f"\n📊 Validation Summary:")
-        print(f"   ✅ XSD Schema: {xsd_file}")
-        print(f"   📄 CSV File: {csv_file}")
-        print(f"   🎯 Compliance: {'100%' if len(issues) == 0 else 'Partial'}")
+        # Display summary
+        print("\nVALIDATION SUMMARY:")
+        print(f"Total rows: {results['total_rows']:,}")
+        print(f"Valid rows: {results['valid_rows']:,}")
+        print(f"Invalid rows: {results['invalid_rows']:,}")
+        print(f"Success rate: {results['validation_rate']:.1f}%")
         
+        if results['invalid_rows'] > 0:
+            print(f"\nFirst few validation errors:")
+            count = 0
+            for result in results['results']:
+                if not result['is_valid'] and count < 3:
+                    print(f"  Row {result['row_index']}: {result['errors'][0]}")
+                    count += 1
+        
+        print(f"\nFull report saved to: {report_filename}")
+        
+        # Ask if user wants to see the full report
+        show_full = input("\nShow full report in console? (y/n): ").strip().lower()
+        if show_full in ['y', 'yes']:
+            print("\n" + "=" * 60)
+            print(report)
     else:
-        print("❌ VALIDATION FAILED")
-        print("🔍 Check file format and try again")
-        print("💡 Ensure CSV has proper headers and XSD is valid")
+        print(f"Validation failed: {results['error']}")
+        if 'available_columns' in results:
+            print(f"Available columns in CSV: {', '.join(results['available_columns'])}")
+            print(f"Required columns: {', '.join(results['required_columns'])}")
 
-def main_with_args():
-    """Command line mode - accepts arguments"""
-    if len(sys.argv) < 2:
-        print("🚀 TRUE XSD pacs.008.001.08 Validator")
-        print("="*50)
-        print("Usage: python validator.py <csv_file> [xsd_file]")
-        print("")
-        print("Arguments:")
-        print("  csv_file    Path to your CSV file (required)")
-        print("  xsd_file    Path to XSD file (optional, default: pacs.008.001.08.xsd)")
-        print("")
-        print("Examples:")
-        print("  python validator.py data.csv")
-        print("  python validator.py /path/to/data.csv /path/to/schema.xsd")
-        print("")
-        print("Or run without arguments for interactive mode:")
-        print("  python validator.py")
-        print("")
-        main()
-        return
-    
-    csv_file = sys.argv[1]
-    xsd_file = sys.argv[2] if len(sys.argv) > 2 else "pacs.008.001.08.xsd"
-    
-    print(f"🚀 TRUE XSD pacs.008.001.08 Validator (Command Line Mode)")
-    print("="*70)
-    print(f"📄 CSV File: {csv_file}")
-    print(f"📋 XSD File: {xsd_file}")
-    print(f"🧠 Intelligent CLRG field determination: ENABLED")
-    
-    # Validate files exist
-    if not os.path.exists(csv_file):
-        print(f"❌ CSV file not found: {csv_file}")
-        print(f"💡 Make sure the file path is correct")
-        return
-    
-    if not os.path.exists(xsd_file):
-        print(f"❌ XSD file not found: {xsd_file}")
-        print(f"💡 Download from: https://github.com/phoughton/pyiso20022/raw/main/xsd/payments_clearing_and_settlement/pacs.008/pacs.008.001.08.xsd")
-        return
-    
-    # Initialize and run validator
-    print(f"\n🔧 Initializing validator...")
-    validator = TrueXSDPacs008Validator(xsd_file)
-    
-    if not validator.schema:
-        print("❌ Failed to load XSD schema.")
-        return
-    
-    print(f"🚀 Starting validation...")
-    issues = validator.process_csv_file(csv_file)
-    
-    # Command line results
-    if issues is not None:
-        total_issues = len(issues)
-        if total_issues == 0:
-            print(f"\n✅ SUCCESS: All rows are XSD compliant!")
-            sys.exit(0)
-        else:
-            print(f"\n⚠️  ISSUES FOUND: {total_issues} rows with XSD violations")
-            sys.exit(1)
-    else:
-        print("❌ VALIDATION FAILED")
-        sys.exit(2)
 
 if __name__ == "__main__":
-    try:
-        # Check if command line arguments provided
-        if len(sys.argv) > 1:
-            main_with_args()
-        else:
-            main()
-    except KeyboardInterrupt:
-        print("\n\n⏹️  Validation interrupted by user")
-        print("👋 Goodbye!")
-    except Exception as e:
-        print(f"\n❌ Unexpected error occurred: {str(e)}")
-        print("💡 Please check your input files and try again")
-        sys.exit(3)
+    main()
