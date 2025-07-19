@@ -1,22 +1,23 @@
 import pandas as pd
-import re
+import requests
+from lxml import etree
+import xmlschema
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
 import logging
+import os
+from decimal import Decimal
+import xml.etree.ElementTree as ET
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-class CSVFedPacs008Validator:
+class TrueXSDPacs008Validator:
     def __init__(self):
-        # ISO 4217 Currency codes
-        self.valid_currencies = {
-            'USD', 'EUR', 'GBP', 'JPY', 'CHF', 'CAD', 'AUD', 'SEK', 'NOK', 'DKK',
-            'PLN', 'CZK', 'HUF', 'BGN', 'HRK', 'RON', 'TRY', 'RUB', 'CNY', 'KRW',
-            'SGD', 'HKD', 'NZD', 'ZAR', 'BRL', 'MXN', 'INR', 'THB', 'MYR', 'IDR'
-        }
+        self.xsd_url = "https://raw.githubusercontent.com/phoughton/pyiso20022/main/xsd/payments_clearing_and_settlement/pacs.008/pacs.008.001.08.xsd"
+        self.xsd_file = "pacs.008.001.08.xsd"
+        self.schema = None
         
-        # Expected CSV column order (based on your original field list)
+        # CSV column order from your specification
         self.expected_columns = [
             'TRAN_ID', 'TXN_DATE', 'TDN_NUMBER', 'SBK_REF_NUM', 'PROC_DATE', 'PAY_DATE', 
             'TXN_MEMO', 'SEND_DATE', 'REPETITIVE_ID', 'SOURCE_CD', 'INSTR_ADV_TYPE', 'STS_CD', 
@@ -39,119 +40,35 @@ class CSVFedPacs008Validator:
             'FTR_EXP_SUBSTATE'
         ]
         
-        # Field mappings to pacs.008 elements (from your document)
-        self.field_mappings = {
-            # Message Header
-            'TRAN_ID': {'pacs_element': 'GrpHdr/MsgId', 'max_length': 35, 'required': True, 'type': 'alphanumeric'},
-            'TXN_DATE': {'pacs_element': 'GrpHdr/CreDtTm', 'required': True, 'type': 'datetime'},
-            'TDN_NUMBER': {'pacs_element': 'CdtTrfTxInf/PmtId/TxId', 'max_length': 35, 'required': False, 'type': 'alphanumeric'},
-            'SBK_REF_NUM': {'pacs_element': 'CdtTrfTxInf/PmtId/UETR', 'max_length': 36, 'required': False, 'type': 'uuid'},
-            'FRONTIER_REF_NO': {'pacs_element': 'CdtTrfTxInf/PmtId/EndToEndId', 'max_length': 35, 'required': False, 'type': 'alphanumeric'},
-            
-            # Transaction Information
-            'FEXCH_RATE_AMOUNT': {'pacs_element': 'CdtTrfTxInf/IntrBkSttlmAmt', 'required': True, 'type': 'amount'},
-            'CURRENCY_CODE': {'pacs_element': 'CdtTrfTxInf/IntrBkSttlmAmt/@Ccy', 'required': True, 'type': 'currency'},
-            'PROC_DATE': {'pacs_element': 'CdtTrfTxInf/IntrBkSttlmDt', 'required': False, 'type': 'date'},
-            'PAY_DATE': {'pacs_element': 'CdtTrfTxInf/ReqdExctnDt', 'required': False, 'type': 'date'},
-            
-            # Debtor Information
-            'DBT_ID': {'pacs_element': 'CdtTrfTxInf/Dbtr/Id', 'max_length': 35, 'required': False, 'type': 'alphanumeric'},
-            'DBT_NAME1': {'pacs_element': 'CdtTrfTxInf/Dbtr/Nm', 'max_length': 70, 'required': True, 'type': 'text'},
-            'DBT_NAME_2': {'pacs_element': 'CdtTrfTxInf/Dbtr/Nm', 'max_length': 70, 'required': False, 'type': 'text'},
-            'DBT_NAME_3': {'pacs_element': 'CdtTrfTxInf/Dbtr/Nm', 'max_length': 70, 'required': False, 'type': 'text'},
-            'DBT_NAME_4': {'pacs_element': 'CdtTrfTxInf/Dbtr/Nm', 'max_length': 70, 'required': False, 'type': 'text'},
-            'DBT_ACCTG_ACCOUNT': {'pacs_element': 'CdtTrfTxInf/DbtrAcct/Id', 'max_length': 34, 'required': False, 'type': 'account'},
-            'DBT_ACCTG_IDTYPE': {'pacs_element': 'CdtTrfTxInf/DbtrAcct/Id/SchmeNm', 'required': False, 'type': 'code'},
-            
-            # Creditor Information
-            'CDT_ID': {'pacs_element': 'CdtTrfTxInf/Cdtr/Id', 'max_length': 35, 'required': False, 'type': 'alphanumeric'},
-            'CDT_NAME1': {'pacs_element': 'CdtTrfTxInf/Cdtr/Nm', 'max_length': 70, 'required': True, 'type': 'text'},
-            'CDT_NAME2': {'pacs_element': 'CdtTrfTxInf/Cdtr/Nm', 'max_length': 70, 'required': False, 'type': 'text'},
-            'CDT_NAME3': {'pacs_element': 'CdtTrfTxInf/Cdtr/Nm', 'max_length': 70, 'required': False, 'type': 'text'},
-            'CDT_NAME4': {'pacs_element': 'CdtTrfTxInf/Cdtr/Nm', 'max_length': 70, 'required': False, 'type': 'text'},
-            'CDT_ACCTG_ACCOUNT': {'pacs_element': 'CdtTrfTxInf/CdtrAcct/Id', 'max_length': 34, 'required': False, 'type': 'account'},
-            'CDT_ACCTG_IDTYPE': {'pacs_element': 'CdtTrfTxInf/CdtrAcct/Id/SchmeNm', 'required': False, 'type': 'code'},
-            
-            # Bank Information
-            'BBK_ID': {'pacs_element': 'CdtTrfTxInf/CdtrAgt/FinInstnId/BICFI', 'max_length': 11, 'required': False, 'type': 'bic'},
-            'BBK_NAME1': {'pacs_element': 'CdtTrfTxInf/CdtrAgt/FinInstnId/Nm', 'max_length': 70, 'required': False, 'type': 'text'},
-            'BBK_NAME2': {'pacs_element': 'CdtTrfTxInf/CdtrAgt/FinInstnId/Nm', 'max_length': 70, 'required': False, 'type': 'text'},
-            'BBK_NAME3': {'pacs_element': 'CdtTrfTxInf/CdtrAgt/FinInstnId/Nm', 'max_length': 70, 'required': False, 'type': 'text'},
-            'BBK_NAME4': {'pacs_element': 'CdtTrfTxInf/CdtrAgt/FinInstnId/Nm', 'max_length': 70, 'required': False, 'type': 'text'},
-            
-            'OBK_ID': {'pacs_element': 'CdtTrfTxInf/DbtrAgt/FinInstnId/BICFI', 'max_length': 11, 'required': False, 'type': 'bic'},
-            'OBK_NAME1': {'pacs_element': 'CdtTrfTxInf/DbtrAgt/FinInstnId/Nm', 'max_length': 70, 'required': False, 'type': 'text'},
-            'OBK_NAME2': {'pacs_element': 'CdtTrfTxInf/DbtrAgt/FinInstnId/Nm', 'max_length': 70, 'required': False, 'type': 'text'},
-            'OBK_NAME3': {'pacs_element': 'CdtTrfTxInf/DbtrAgt/FinInstnId/Nm', 'max_length': 70, 'required': False, 'type': 'text'},
-            'OBK_NAME4': {'pacs_element': 'CdtTrfTxInf/DbtrAgt/FinInstnId/Nm', 'max_length': 70, 'required': False, 'type': 'text'},
-            
-            'IBK_ID': {'pacs_element': 'CdtTrfTxInf/IntrmyAgt1/FinInstnId/BICFI', 'max_length': 11, 'required': False, 'type': 'bic'},
-            'IBK_NAME1': {'pacs_element': 'CdtTrfTxInf/IntrmyAgt1/FinInstnId/Nm', 'max_length': 70, 'required': False, 'type': 'text'},
-            'IBK_NAME2': {'pacs_element': 'CdtTrfTxInf/IntrmyAgt1/FinInstnId/Nm', 'max_length': 70, 'required': False, 'type': 'text'},
-            'IBK_NAME3': {'pacs_element': 'CdtTrfTxInf/IntrmyAgt1/FinInstnId/Nm', 'max_length': 70, 'required': False, 'type': 'text'},
-            'IBK_NAME4': {'pacs_element': 'CdtTrfTxInf/IntrmyAgt1/FinInstnId/Nm', 'max_length': 70, 'required': False, 'type': 'text'},
-            
-            # Remittance Information
-            'TXN_MEMO': {'pacs_element': 'CdtTrfTxInf/RmtInf/Ustrd', 'max_length': 140, 'required': False, 'type': 'text'},
-            'ORP_BEN_INF1': {'pacs_element': 'CdtTrfTxInf/RmtInf/Strd/RfrdDocInf/Nb', 'max_length': 35, 'required': False, 'type': 'text'},
-            'ORP_BEN_INF2': {'pacs_element': 'CdtTrfTxInf/RmtInf/Strd/RfrdDocInf/RltdDt', 'required': False, 'type': 'date'},
-            'ORP_BEN_INF3': {'pacs_element': 'CdtTrfTxInf/RmtInf/Strd/AddtlRmtInf', 'max_length': 140, 'required': False, 'type': 'text'},
-            'ORP_BEN_INF4': {'pacs_element': 'CdtTrfTxInf/RmtInf/Strd/AddtlRmtInf', 'max_length': 140, 'required': False, 'type': 'text'},
-            
-            # Boolean Fields
-            'IS_COVER_PAYMENT': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/IsCoverPayment', 'required': False, 'type': 'boolean'},
-            'STRAIGHT_THR_U': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/StraightThrough', 'required': False, 'type': 'boolean'},
-            
-            # Network Specific Fields
-            'SOURCE_CD': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/SourceCode', 'required': False, 'type': 'code', 'values': ['SWF', 'FED', 'RTN']},
-            'INSTR_ADV_TYPE': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/InstructionAdviceType', 'required': False, 'type': 'code', 'values': ['CHP', 'FED']},
-            
-            # Federal Reserve Fields
-            'FED_IMAD': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/FedwireMessage/IMAD', 'max_length': 16, 'required': False, 'type': 'fedwire_id'},
-            'FED_OMAD': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/FedwireMessage/OMAD', 'max_length': 16, 'required': False, 'type': 'fedwire_id'},
-            'FED_ISN': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/FedwireMessage/ISN', 'required': False, 'type': 'numeric'},
-            'FED_OSN': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/FedwireMessage/OSN', 'required': False, 'type': 'numeric'},
-            
-            # SWIFT Fields
-            'SWF_IN_MIR': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/SWIFTMessage/InputMIR', 'max_length': 28, 'required': False, 'type': 'swift_mir'},
-            'SWF_OUT_MIR': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/SWIFTMessage/OutputMIR', 'max_length': 28, 'required': False, 'type': 'swift_mir'},
-            'SWF_ISN': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/SWIFTMessage/ISN', 'required': False, 'type': 'numeric'},
-            'SWF_OSN': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/SWIFTMessage/OSN', 'required': False, 'type': 'numeric'},
-            
-            # CHIPS Fields
-            'CHP_ISN': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/CHIPSMessage/ISN', 'required': False, 'type': 'numeric'},
-            'CHP_OSN': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/CHIPSMessage/OSN', 'required': False, 'type': 'numeric'},
-            'CHP_SSN_1': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/CHIPSMessage/SSN1', 'required': False, 'type': 'numeric'},
-            'CHP_SSN_6': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/CHIPSMessage/SSN6', 'required': False, 'type': 'numeric'},
-            
-            # Operational Fields
-            'SEND_DATE': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/SendDate', 'required': False, 'type': 'date'},
-            'RCV_DATE': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/ReceiveDate', 'required': False, 'type': 'date'},
-            'RCV_TIME': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/ReceiveTime', 'required': False, 'type': 'time'},
-            'ENTRY_PERSON': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/EntryPerson', 'max_length': 35, 'required': False, 'type': 'text'},
-            'VERIFY_PERSON': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/VerifyPerson', 'max_length': 35, 'required': False, 'type': 'text'},
-            'REPAIR_PERSON': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/RepairPerson', 'max_length': 35, 'required': False, 'type': 'text'},
-            'EXCEPT_PERSON': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/ExceptPerson', 'max_length': 35, 'required': False, 'type': 'text'},
-            'DLVRY_PERSON': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/DeliveryPerson', 'max_length': 35, 'required': False, 'type': 'text'},
-            'DLV_MEMO': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/DeliveryMemo', 'max_length': 140, 'required': False, 'type': 'text'},
-            
-            # Status and Control Fields
-            'STS_CD': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/StatusCode', 'required': False, 'type': 'code'},
-            'WIRE_TYPE': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/WireType', 'required': False, 'type': 'code'},
-            'REPETITIVE_ID': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/RepetitiveId', 'required': False, 'type': 'alphanumeric'},
-            'ISO20022_MSGTYPE_IN': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/MessageType', 'required': False, 'type': 'code'},
-        }
+        # Initialize the XSD schema
+        self.load_xsd_schema()
+    
+    def load_xsd_schema(self):
+        """Download and load the pacs.008 XSD schema"""
+        print("📥 Loading pacs.008.001.08 XSD schema...")
         
-        # XML reserved characters
-        self.xml_reserved = ['&', '<', '>', '"', "'"]
-        
-        # Validation patterns
-        self.patterns = {
-            'bic': r'^[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}([A-Z0-9]{3})?$',
-            'fedwire_id': r'^[0-9]{8}[0-9]{8}$',
-            'swift_mir': r'^[0-9]{6}[A-Z]{4}[A-Z0-9]{4}[0-9]{6}[0-9]{4}$',
-            'uuid': r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
-        }
+        try:
+            # Download XSD if not exists
+            if not os.path.exists(self.xsd_file):
+                print(f"🌐 Downloading XSD from: {self.xsd_url}")
+                response = requests.get(self.xsd_url)
+                response.raise_for_status()
+                
+                with open(self.xsd_file, 'w', encoding='utf-8') as f:
+                    f.write(response.text)
+                print(f"✅ XSD downloaded and saved as {self.xsd_file}")
+            else:
+                print(f"📄 Using existing XSD file: {self.xsd_file}")
+            
+            # Load schema using xmlschema
+            self.schema = xmlschema.XMLSchema(self.xsd_file)
+            print(f"✅ XSD schema loaded successfully!")
+            print(f"   Schema target namespace: {self.schema.target_namespace}")
+            print(f"   Schema version: {getattr(self.schema, 'version', 'Not specified')}")
+            
+        except Exception as e:
+            print(f"❌ Error loading XSD schema: {str(e)}")
+            self.schema = None
     
     def preprocess_csv_file(self, file_path):
         """Preprocess Mac CSV file with ^M line endings"""
@@ -162,7 +79,7 @@ class CSVFedPacs008Validator:
             with open(file_path, 'rb') as f:
                 raw_content = f.read()
             
-            # Decode and handle different encodings
+            # Handle encoding
             try:
                 content = raw_content.decode('utf-8')
             except UnicodeDecodeError:
@@ -171,52 +88,30 @@ class CSVFedPacs008Validator:
                 except UnicodeDecodeError:
                     content = raw_content.decode('cp1252')
             
-            print(f"📄 File encoding detected and decoded")
-            
-            # Handle Mac line endings (^M = \r)
-            content = content.replace('\r\n', '\n')  # Windows to Unix
-            content = content.replace('\r', '\n')    # Mac to Unix
-            
-            # Split into lines
-            lines = content.split('\n')
-            lines = [line.strip() for line in lines if line.strip()]
+            # Handle Mac line endings
+            content = content.replace('\r\n', '\n').replace('\r', '\n')
+            lines = [line.strip() for line in content.split('\n') if line.strip()]
             
             print(f"📊 Found {len(lines)} non-empty lines")
             
             if len(lines) < 2:
                 raise ValueError("CSV file must have at least header and one data row")
             
-            # Parse header
-            header_line = lines[0]
-            headers = [h.strip().strip('"') for h in header_line.split(',')]
-            
-            print(f"📋 CSV Headers found: {len(headers)} columns")
-            print(f"   First 10 headers: {headers[:10]}")
-            
-            # Parse data rows
+            # Parse CSV
+            headers = [h.strip().strip('"') for h in lines[0].split(',')]
             data_rows = []
-            for i, line in enumerate(lines[1:], 1):
-                if line.strip():
-                    # Simple CSV parsing (handles basic cases)
-                    values = [v.strip().strip('"') for v in line.split(',')]
-                    
-                    # Pad with empty values if row has fewer columns
-                    while len(values) < len(headers):
-                        values.append('')
-                    
-                    # Truncate if row has more columns
-                    values = values[:len(headers)]
-                    
-                    data_rows.append(values)
             
-            print(f"✅ Parsed {len(data_rows)} data rows")
+            for line in lines[1:]:
+                values = [v.strip().strip('"') for v in line.split(',')]
+                while len(values) < len(headers):
+                    values.append('')
+                values = values[:len(headers)]
+                data_rows.append(values)
             
-            # Create DataFrame
             df = pd.DataFrame(data_rows, columns=headers)
-            
-            # Clean up common issues
             df = df.replace(['', 'NULL', 'null', 'N/A', 'n/a'], pd.NA)
             
+            print(f"✅ Parsed {len(data_rows)} data rows with {len(headers)} columns")
             return df
             
         except Exception as e:
@@ -224,7 +119,7 @@ class CSVFedPacs008Validator:
             return None
     
     def is_empty_or_null(self, value):
-        """Check if value is null, NaN, empty string, or whitespace only"""
+        """Check if value is empty or null"""
         if pd.isna(value):
             return True
         if value is None:
@@ -233,423 +128,390 @@ class CSVFedPacs008Validator:
             return True
         return False
     
-    def validate_pacs008_field(self, value, field_name, mapping):
-        """Validate field against pacs.008 XSD rules"""
-        issues = []
-        
-        # Check if required field is missing
-        if mapping.get('required', False) and self.is_empty_or_null(value):
-            issues.append(f"❌ REQUIRED field '{field_name}' is missing (pacs.008: {mapping['pacs_element']})")
-            return issues
-        
-        # Skip validation if empty and not required
+    def clean_value(self, value):
+        """Clean value for XML generation"""
         if self.is_empty_or_null(value):
-            return issues
+            return None
         
-        field_type = mapping.get('type', 'text')
         value_str = str(value).strip()
         
-        # Universal validations first
-        # 1. Length validation
-        if 'max_length' in mapping and len(value_str) > mapping['max_length']:
-            issues.append(f"⚠️ {field_name}: Length {len(value_str)} exceeds pacs.008 limit of {mapping['max_length']}")
+        # XML escape special characters
+        value_str = value_str.replace('&', '&amp;')
+        value_str = value_str.replace('<', '&lt;')
+        value_str = value_str.replace('>', '&gt;')
+        value_str = value_str.replace('"', '&quot;')
+        value_str = value_str.replace("'", '&apos;')
         
-        # 2. XML reserved characters
-        for char in self.xml_reserved:
-            if char in value_str:
-                issues.append(f"⚠️ {field_name}: Contains XML reserved character '{char}' - needs escaping")
-        
-        # 3. ASCII compliance
-        if not all(ord(c) < 128 for c in value_str):
-            issues.append(f"⚠️ {field_name}: Contains non-ASCII characters - may not be pacs.008 compliant")
-        
-        # Type-specific validations
-        if field_type == 'amount':
-            issues.extend(self.validate_amount(value, field_name))
-        elif field_type == 'currency':
-            issues.extend(self.validate_currency(value, field_name))
-        elif field_type in ['date', 'datetime']:
-            issues.extend(self.validate_date(value, field_name, field_type))
-        elif field_type == 'bic':
-            issues.extend(self.validate_bic(value, field_name))
-        elif field_type == 'boolean':
-            issues.extend(self.validate_boolean(value, field_name))
-        elif field_type == 'code':
-            issues.extend(self.validate_code(value, field_name, mapping))
-        elif field_type == 'fedwire_id':
-            issues.extend(self.validate_fedwire_id(value, field_name))
-        elif field_type == 'swift_mir':
-            issues.extend(self.validate_swift_mir(value, field_name))
-        elif field_type == 'uuid':
-            issues.extend(self.validate_uuid(value, field_name))
-        elif field_type == 'numeric':
-            issues.extend(self.validate_numeric(value, field_name))
-        elif field_type == 'account':
-            issues.extend(self.validate_account(value, field_name))
-        
-        return issues
+        return value_str
     
-    def validate_amount(self, value, field_name):
-        """Validate amount field"""
-        issues = []
+    def concatenate_name_fields(self, name1, name2, name3, name4):
+        """Concatenate name fields with proper spacing"""
+        names = []
+        for name in [name1, name2, name3, name4]:
+            clean_name = self.clean_value(name)
+            if clean_name:
+                names.append(clean_name)
+        return ' '.join(names) if names else None
+    
+    def format_datetime(self, date_value):
+        """Format date/datetime for ISO 8601"""
+        if self.is_empty_or_null(date_value):
+            return None
+        
+        date_str = str(date_value).strip()
+        
+        # Try different date formats
+        formats = [
+            '%Y-%m-%d',
+            '%Y-%m-%dT%H:%M:%S',
+            '%m/%d/%Y',
+            '%d/%m/%Y',
+            '%Y/%m/%d'
+        ]
+        
+        for fmt in formats:
+            try:
+                dt = datetime.strptime(date_str, fmt)
+                return dt.strftime('%Y-%m-%dT%H:%M:%S')
+            except ValueError:
+                continue
+        
+        return date_str  # Return as-is if can't parse
+    
+    def format_date(self, date_value):
+        """Format date for ISO 8601 date only"""
+        if self.is_empty_or_null(date_value):
+            return None
+        
+        date_str = str(date_value).strip()
+        
+        formats = [
+            '%Y-%m-%d',
+            '%m/%d/%Y',
+            '%d/%m/%Y',
+            '%Y/%m/%d'
+        ]
+        
+        for fmt in formats:
+            try:
+                dt = datetime.strptime(date_str, fmt)
+                return dt.strftime('%Y-%m-%d')
+            except ValueError:
+                continue
+        
+        return date_str
+    
+    def format_amount(self, amount_value):
+        """Format amount for pacs.008"""
+        if self.is_empty_or_null(amount_value):
+            return None
+        
         try:
-            clean_value = str(value).replace(',', '').replace('$', '').replace('€', '').strip()
+            # Clean amount value
+            clean_value = str(amount_value).replace(',', '').replace('$', '').replace('€', '').strip()
+            
             if clean_value.startswith('(') and clean_value.endswith(')'):
                 clean_value = '-' + clean_value[1:-1]
             
             amount = Decimal(clean_value)
             
-            if amount < 0:
-                issues.append(f"⚠️ {field_name}: Negative amounts not typically allowed in pacs.008")
-            if amount == 0:
-                issues.append(f"ℹ️ {field_name}: Zero amount - verify business logic")
+            # Format to max 5 decimal places
+            formatted = f"{amount:.5f}".rstrip('0').rstrip('.')
+            return formatted
             
-            # Check decimal places (max 5)
-            if '.' in clean_value and len(clean_value.split('.')[1]) > 5:
-                issues.append(f"⚠️ {field_name}: Too many decimal places (max 5 for pacs.008)")
-            
-            # Check total digits (max 18 before decimal)
-            integer_part = str(int(abs(amount)))
-            if len(integer_part) > 18:
-                issues.append(f"⚠️ {field_name}: Too many digits (max 18 for pacs.008)")
-                
-        except (ValueError, InvalidOperation):
-            issues.append(f"❌ {field_name}: Invalid amount format")
-        
-        return issues
+        except Exception:
+            return str(amount_value)
     
-    def validate_currency(self, value, field_name):
-        """Validate ISO 4217 currency code"""
-        issues = []
-        currency = str(value).strip().upper()
+    def csv_row_to_pacs008_xml(self, row, headers):
+        """Convert CSV row to pacs.008 XML format"""
+        # Create row dictionary
+        row_dict = {header: (row[i] if i < len(row) else None) for i, header in enumerate(headers)}
         
-        if len(currency) != 3:
-            issues.append(f"❌ {field_name}: Currency code must be 3 characters")
+        # Get TRAN_ID (first column)
+        tran_id = self.clean_value(row_dict.get('TRAN_ID', f'TXN{datetime.now().strftime("%Y%m%d%H%M%S")}'))
         
-        if currency not in self.valid_currencies:
-            issues.append(f"❌ {field_name}: '{currency}' not a valid ISO 4217 currency")
+        # Build XML structure
+        xml_parts = []
+        xml_parts.append('<?xml version="1.0" encoding="UTF-8"?>')
+        xml_parts.append('<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">')
+        xml_parts.append('  <FIToFICstmrCdtTrf>')
         
-        if str(value) != currency:
-            issues.append(f"⚠️ {field_name}: Should be uppercase")
+        # Group Header
+        xml_parts.append('    <GrpHdr>')
+        xml_parts.append(f'      <MsgId>{tran_id}</MsgId>')
         
-        return issues
+        creation_datetime = self.format_datetime(row_dict.get('TXN_DATE'))
+        if creation_datetime:
+            xml_parts.append(f'      <CreDtTm>{creation_datetime}</CreDtTm>')
+        else:
+            xml_parts.append(f'      <CreDtTm>{datetime.now().strftime("%Y-%m-%dT%H:%M:%S")}</CreDtTm>')
+        
+        xml_parts.append('      <NbOfTxs>1</NbOfTxs>')
+        xml_parts.append('    </GrpHdr>')
+        
+        # Credit Transfer Transaction Information
+        xml_parts.append('    <CdtTrfTxInf>')
+        
+        # Payment Identification
+        xml_parts.append('      <PmtId>')
+        xml_parts.append(f'        <InstrId>{tran_id}</InstrId>')
+        
+        end_to_end_id = self.clean_value(row_dict.get('FRONTIER_REF_NO'))
+        if end_to_end_id:
+            xml_parts.append(f'        <EndToEndId>{end_to_end_id}</EndToEndId>')
+        
+        tx_id = self.clean_value(row_dict.get('TDN_NUMBER'))
+        if tx_id:
+            xml_parts.append(f'        <TxId>{tx_id}</TxId>')
+        
+        xml_parts.append('      </PmtId>')
+        
+        # Interbank Settlement Amount
+        amount = self.format_amount(row_dict.get('FEXCH_RATE_AMOUNT'))
+        currency = self.clean_value(row_dict.get('CURRENCY_CODE', 'USD'))
+        
+        if amount and currency:
+            xml_parts.append(f'      <IntrBkSttlmAmt Ccy="{currency}">{amount}</IntrBkSttlmAmt>')
+        
+        # Settlement Date
+        settlement_date = self.format_date(row_dict.get('PROC_DATE'))
+        if settlement_date:
+            xml_parts.append(f'      <IntrBkSttlmDt>{settlement_date}</IntrBkSttlmDt>')
+        
+        # Debtor
+        debtor_name = self.concatenate_name_fields(
+            row_dict.get('DBT_NAME1'), row_dict.get('DBT_NAME_2'),
+            row_dict.get('DBT_NAME_3'), row_dict.get('DBT_NAME_4')
+        )
+        
+        if debtor_name:
+            xml_parts.append('      <Dbtr>')
+            xml_parts.append(f'        <Nm>{debtor_name}</Nm>')
+            xml_parts.append('      </Dbtr>')
+        
+        # Debtor Account
+        debtor_account = self.clean_value(row_dict.get('DBT_ACCTG_ACCOUNT'))
+        if debtor_account:
+            xml_parts.append('      <DbtrAcct>')
+            xml_parts.append('        <Id>')
+            xml_parts.append(f'          <Othr>')
+            xml_parts.append(f'            <Id>{debtor_account}</Id>')
+            xml_parts.append(f'          </Othr>')
+            xml_parts.append('        </Id>')
+            xml_parts.append('      </DbtrAcct>')
+        
+        # Debtor Agent
+        debtor_agent_bic = self.clean_value(row_dict.get('OBK_ID'))
+        debtor_agent_name = self.concatenate_name_fields(
+            row_dict.get('OBK_NAME1'), row_dict.get('OBK_NAME2'),
+            row_dict.get('OBK_NAME3'), row_dict.get('OBK_NAME4')
+        )
+        
+        if debtor_agent_bic or debtor_agent_name:
+            xml_parts.append('      <DbtrAgt>')
+            xml_parts.append('        <FinInstnId>')
+            if debtor_agent_bic:
+                xml_parts.append(f'          <BICFI>{debtor_agent_bic}</BICFI>')
+            if debtor_agent_name:
+                xml_parts.append(f'          <Nm>{debtor_agent_name}</Nm>')
+            xml_parts.append('        </FinInstnId>')
+            xml_parts.append('      </DbtrAgt>')
+        
+        # Creditor Agent
+        creditor_agent_bic = self.clean_value(row_dict.get('BBK_ID'))
+        creditor_agent_name = self.concatenate_name_fields(
+            row_dict.get('BBK_NAME1'), row_dict.get('BBK_NAME2'),
+            row_dict.get('BBK_NAME3'), row_dict.get('BBK_NAME4')
+        )
+        
+        if creditor_agent_bic or creditor_agent_name:
+            xml_parts.append('      <CdtrAgt>')
+            xml_parts.append('        <FinInstnId>')
+            if creditor_agent_bic:
+                xml_parts.append(f'          <BICFI>{creditor_agent_bic}</BICFI>')
+            if creditor_agent_name:
+                xml_parts.append(f'          <Nm>{creditor_agent_name}</Nm>')
+            xml_parts.append('        </FinInstnId>')
+            xml_parts.append('      </CdtrAgt>')
+        
+        # Creditor
+        creditor_name = self.concatenate_name_fields(
+            row_dict.get('CDT_NAME1'), row_dict.get('CDT_NAME2'),
+            row_dict.get('CDT_NAME3'), row_dict.get('CDT_NAME4')
+        )
+        
+        if creditor_name:
+            xml_parts.append('      <Cdtr>')
+            xml_parts.append(f'        <Nm>{creditor_name}</Nm>')
+            xml_parts.append('      </Cdtr>')
+        
+        # Creditor Account
+        creditor_account = self.clean_value(row_dict.get('CDT_ACCTG_ACCOUNT'))
+        if creditor_account:
+            xml_parts.append('      <CdtrAcct>')
+            xml_parts.append('        <Id>')
+            xml_parts.append(f'          <Othr>')
+            xml_parts.append(f'            <Id>{creditor_account}</Id>')
+            xml_parts.append(f'          </Othr>')
+            xml_parts.append('        </Id>')
+            xml_parts.append('      </CdtrAcct>')
+        
+        # Remittance Information
+        remittance_info = self.clean_value(row_dict.get('TXN_MEMO'))
+        if remittance_info:
+            xml_parts.append('      <RmtInf>')
+            xml_parts.append(f'        <Ustrd>{remittance_info}</Ustrd>')
+            xml_parts.append('      </RmtInf>')
+        
+        xml_parts.append('    </CdtTrfTxInf>')
+        xml_parts.append('  </FIToFICstmrCdtTrf>')
+        xml_parts.append('</Document>')
+        
+        return '\n'.join(xml_parts)
     
-    def validate_date(self, value, field_name, field_type):
-        """Validate date format for pacs.008 (ISO 8601)"""
-        issues = []
-        date_str = str(value).strip()
+    def validate_xml_against_xsd(self, xml_content):
+        """Validate XML against the pacs.008 XSD schema"""
+        if not self.schema:
+            return False, ["XSD schema not loaded"]
         
-        formats = ['%Y-%m-%d', '%Y-%m-%dT%H:%M:%S', '%m/%d/%Y', '%d/%m/%Y', '%Y/%m/%d']
-        
-        parsed = False
-        for fmt in formats:
-            try:
-                datetime.strptime(date_str, fmt)
-                parsed = True
-                if fmt not in ['%Y-%m-%d', '%Y-%m-%dT%H:%M:%S']:
-                    issues.append(f"⚠️ {field_name}: Should use ISO 8601 format (YYYY-MM-DD)")
-                break
-            except ValueError:
-                continue
-        
-        if not parsed:
-            issues.append(f"❌ {field_name}: Invalid date format")
-        
-        return issues
-    
-    def validate_bic(self, value, field_name):
-        """Validate BIC code"""
-        issues = []
-        bic = str(value).strip().upper()
-        
-        if not re.match(self.patterns['bic'], bic):
-            issues.append(f"❌ {field_name}: Invalid BIC format")
-        
-        if len(bic) not in [8, 11]:
-            issues.append(f"❌ {field_name}: BIC must be 8 or 11 characters")
-        
-        return issues
-    
-    def validate_boolean(self, value, field_name):
-        """Validate boolean field"""
-        issues = []
-        value_str = str(value).strip().lower()
-        valid_values = ['true', 'false', '1', '0', 'yes', 'no', 'y', 'n']
-        
-        if value_str not in valid_values:
-            issues.append(f"❌ {field_name}: Invalid boolean value")
-        
-        return issues
-    
-    def validate_code(self, value, field_name, mapping):
-        """Validate code field with predefined values"""
-        issues = []
-        if 'values' in mapping:
-            value_str = str(value).strip().upper()
-            if value_str not in mapping['values']:
-                issues.append(f"❌ {field_name}: Invalid value '{value}' - allowed: {mapping['values']}")
-        
-        return issues
-    
-    def validate_fedwire_id(self, value, field_name):
-        """Validate Fedwire ID format"""
-        issues = []
-        if not re.match(self.patterns['fedwire_id'], str(value).strip()):
-            issues.append(f"❌ {field_name}: Invalid Fedwire ID format (should be 16 digits)")
-        
-        return issues
-    
-    def validate_swift_mir(self, value, field_name):
-        """Validate SWIFT MIR format"""
-        issues = []
-        if not re.match(self.patterns['swift_mir'], str(value).strip()):
-            issues.append(f"❌ {field_name}: Invalid SWIFT MIR format")
-        
-        return issues
-    
-    def validate_uuid(self, value, field_name):
-        """Validate UUID format"""
-        issues = []
-        if not re.match(self.patterns['uuid'], str(value).strip()):
-            issues.append(f"❌ {field_name}: Invalid UUID format")
-        
-        return issues
-    
-    def validate_numeric(self, value, field_name):
-        """Validate numeric field"""
-        issues = []
         try:
-            int(str(value).strip())
-        except ValueError:
-            issues.append(f"❌ {field_name}: Should be numeric")
-        
-        return issues
+            # Parse XML
+            xml_doc = etree.fromstring(xml_content.encode('utf-8'))
+            
+            # Validate against schema
+            self.schema.validate(xml_doc)
+            
+            return True, []
+            
+        except xmlschema.XMLSchemaException as e:
+            return False, [f"XSD Validation Error: {str(e)}"]
+        except etree.XMLSyntaxError as e:
+            return False, [f"XML Syntax Error: {str(e)}"]
+        except Exception as e:
+            return False, [f"Validation Error: {str(e)}"]
     
-    def validate_account(self, value, field_name):
-        """Validate account number"""
-        issues = []
-        value_str = str(value).strip()
-        
-        if len(value_str) > 34:
-            issues.append(f"⚠️ {field_name}: Account number too long (max 34 chars)")
-        
-        if not re.match(r'^[A-Za-z0-9]+, value_str):
-            issues.append(f"⚠️ {field_name}: Account contains invalid characters")
-        
-        return issues
-    
-    def validate_csv_row(self, row, row_index, headers):
-        """Validate a complete CSV row against pacs.008"""
-        issues = []
-        tran_id = row[0] if len(row) > 0 else 'N/A'  # First column is TRAN_ID
+    def validate_csv_row_against_xsd(self, row, headers, row_index):
+        """Validate a CSV row by converting to XML and validating against XSD"""
+        tran_id = row[0] if len(row) > 0 else f'Row{row_index}'
         
         print(f"🔍 Row {row_index:4d}: TRAN_ID = '{tran_id}'")
         
-        # Validate each field
-        for col_index, (header, value) in enumerate(zip(headers, row)):
-            if header in self.field_mappings:
-                mapping = self.field_mappings[header]
-                field_issues = self.validate_pacs008_field(value, header, mapping)
-                
-                if field_issues:
-                    print(f"    📋 Column {col_index+1:2d} ({header}): {len(field_issues)} issues")
-                    for issue in field_issues:
-                        print(f"       {issue}")
-                    issues.extend(field_issues)
-                else:
-                    print(f"    ✅ Column {col_index+1:2d} ({header}): Valid")
+        try:
+            # Convert CSV row to pacs.008 XML
+            xml_content = self.csv_row_to_pacs008_xml(row, headers)
+            
+            # Validate against XSD
+            is_valid, errors = self.validate_xml_against_xsd(xml_content)
+            
+            if is_valid:
+                print(f"    ✅ Row {row_index} is XSD compliant!")
+                return []
             else:
-                if not self.is_empty_or_null(value):
-                    print(f"    ⚠️ Column {col_index+1:2d} ({header}): No pacs.008 mapping defined")
-                    issues.append(f"ℹ️ {header}: No pacs.008 mapping defined")
-                else:
-                    print(f"    📝 Column {col_index+1:2d} ({header}): Empty (no mapping)")
-        
-        # Business rule validations
-        business_issues = self.validate_business_rules(row, headers)
-        if business_issues:
-            print(f"    🚨 Business Rules: {len(business_issues)} violations")
-            for issue in business_issues:
-                print(f"       {issue}")
-            issues.extend(business_issues)
-        
-        if not issues:
-            print(f"    ✅ Row {row_index} is fully compliant!")
-        else:
-            print(f"    ❌ Row {row_index} has {len(issues)} total issues")
-        
-        print("-" * 80)
-        
-        return issues, tran_id
-    
-    def validate_business_rules(self, row, headers):
-        """Validate business rules across fields"""
-        issues = []
-        
-        # Create a dictionary for easier field access
-        row_dict = {header: (row[i] if i < len(row) else '') for i, header in enumerate(headers)}
-        
-        # Rule 1: At least one debtor identification
-        debtor_id_fields = ['DBT_ID', 'DBT_ACCTG_ACCOUNT']
-        has_debtor_id = any(not self.is_empty_or_null(row_dict.get(field, '')) for field in debtor_id_fields)
-        if not has_debtor_id:
-            issues.append("❌ BUSINESS RULE: Missing debtor identification (DBT_ID or DBT_ACCTG_ACCOUNT)")
-        
-        # Rule 2: At least one creditor identification
-        creditor_id_fields = ['CDT_ID', 'CDT_ACCTG_ACCOUNT']
-        has_creditor_id = any(not self.is_empty_or_null(row_dict.get(field, '')) for field in creditor_id_fields)
-        if not has_creditor_id:
-            issues.append("❌ BUSINESS RULE: Missing creditor identification (CDT_ID or CDT_ACCTG_ACCOUNT)")
-        
-        # Rule 3: Network consistency
-        source_cd = row_dict.get('SOURCE_CD', '').strip().upper()
-        instr_adv_type = row_dict.get('INSTR_ADV_TYPE', '').strip().upper()
-        
-        if source_cd == 'FED':
-            fed_fields = ['FED_IMAD', 'FED_OMAD', 'FED_ISN', 'FED_OSN']
-            has_fed_data = any(not self.is_empty_or_null(row_dict.get(field, '')) for field in fed_fields)
-            if not has_fed_data:
-                issues.append("⚠️ BUSINESS RULE: SOURCE_CD=FED but no Fed data populated")
-        
-        if source_cd == 'SWF':
-            swift_fields = ['SWF_IN_MIR', 'SWF_OUT_MIR', 'SWF_ISN', 'SWF_OSN']
-            has_swift_data = any(not self.is_empty_or_null(row_dict.get(field, '')) for field in swift_fields)
-            if not has_swift_data:
-                issues.append("⚠️ BUSINESS RULE: SOURCE_CD=SWF but no SWIFT data populated")
-        
-        if instr_adv_type == 'CHP':
-            chips_fields = ['CHP_ISN', 'CHP_OSN', 'CHP_SSN_1', 'CHP_SSN_6']
-            has_chips_data = any(not self.is_empty_or_null(row_dict.get(field, '')) for field in chips_fields)
-            if not has_chips_data:
-                issues.append("⚠️ BUSINESS RULE: INSTR_ADV_TYPE=CHP but no CHIPS data populated")
-        
-        return issues
+                print(f"    ❌ Row {row_index} has {len(errors)} XSD violations:")
+                for error in errors:
+                    print(f"       🚨 {error}")
+                return errors
+                
+        except Exception as e:
+            error_msg = f"XML Generation Error: {str(e)}"
+            print(f"    ❌ Row {row_index} XML generation failed:")
+            print(f"       🚨 {error_msg}")
+            return [error_msg]
     
     def process_csv_file(self, file_path):
-        """Main processing function for CSV file"""
-        print("🚀 Starting CSV Fed ISO 20022 pacs.008 Validation")
+        """Main processing function"""
+        if not self.schema:
+            print("❌ Cannot proceed without valid XSD schema")
+            return None
+        
+        print("🚀 Starting TRUE XSD pacs.008 Validation")
         print("="*80)
         
-        # Step 1: Preprocess CSV
+        # Preprocess CSV
         df = self.preprocess_csv_file(file_path)
         if df is None:
             return None
         
-        print(f"\n📊 DataFrame created with {len(df)} rows and {len(df.columns)} columns")
-        print(f"📋 Columns: {list(df.columns)[:10]}{'...' if len(df.columns) > 10 else ''}")
-        
-        # Step 2: Check column mapping coverage
-        mapped_columns = set(self.field_mappings.keys())
-        csv_columns = set(df.columns)
-        
-        mapped_in_csv = mapped_columns.intersection(csv_columns)
-        unmapped_in_csv = csv_columns - mapped_columns
-        
-        print(f"\n🗺️ COLUMN MAPPING ANALYSIS:")
-        print(f"   Mapped columns in CSV: {len(mapped_in_csv)}")
-        print(f"   Unmapped columns in CSV: {len(unmapped_in_csv)}")
-        if unmapped_in_csv:
-            print(f"   Unmapped: {list(unmapped_in_csv)[:5]}{'...' if len(unmapped_in_csv) > 5 else ''}")
-        
-        # Step 3: Process each row
-        print(f"\n🔍 VALIDATING {len(df)} ROWS AGAINST PACS.008 XSD")
+        print(f"\n📊 Processing {len(df)} rows against pacs.008.001.08.xsd")
         print("="*80)
         
         all_issues = []
-        issue_summary = {}
         
+        # Process each row
         for index, row in df.iterrows():
             row_values = row.tolist()
             headers = df.columns.tolist()
             
-            row_issues, tran_id = self.validate_csv_row(row_values, index + 1, headers)
+            xsd_errors = self.validate_csv_row_against_xsd(row_values, headers, index + 1)
             
-            if row_issues:
+            if xsd_errors:
+                tran_id = row_values[0] if len(row_values) > 0 else f'Row{index + 1}'
                 all_issues.append({
                     'row': index + 1,
                     'tran_id': tran_id,
-                    'issues': row_issues
+                    'xsd_errors': xsd_errors
                 })
-                
-                # Count issue types
-                for issue in row_issues:
-                    issue_type = issue.split(':')[0].strip('❌⚠️ℹ️🚨 ')
-                    issue_summary[issue_type] = issue_summary.get(issue_type, 0) + 1
         
-        # Step 4: Generate summary report
-        self.generate_summary_report(all_issues, issue_summary, len(df), mapped_in_csv, unmapped_in_csv)
+        # Generate final report
+        self.generate_xsd_report(all_issues, len(df))
         
         return all_issues
     
-    def generate_summary_report(self, all_issues, issue_summary, total_rows, mapped_columns, unmapped_columns):
-        """Generate comprehensive summary report"""
+    def generate_xsd_report(self, all_issues, total_rows):
+        """Generate XSD validation report"""
         print("\n" + "="*80)
-        print("📊 FINAL VALIDATION SUMMARY REPORT")
+        print("📊 TRUE XSD VALIDATION REPORT - pacs.008.001.08")
         print("="*80)
         
-        print(f"\n📈 PROCESSING STATISTICS:")
+        print(f"\n📈 XSD VALIDATION RESULTS:")
         print(f"   Total Rows Processed: {total_rows:,}")
-        print(f"   Rows with Issues: {len(all_issues):,}")
-        print(f"   Clean Rows: {total_rows - len(all_issues):,}")
-        print(f"   Compliance Rate: {((total_rows - len(all_issues)) / total_rows * 100):.1f}%")
-        
-        print(f"\n🗺️ FIELD MAPPING COVERAGE:")
-        print(f"   Mapped to pacs.008: {len(mapped_columns)} fields")
-        print(f"   Unmapped fields: {len(unmapped_columns)} fields")
-        print(f"   Mapping Coverage: {(len(mapped_columns) / (len(mapped_columns) + len(unmapped_columns)) * 100):.1f}%")
-        
-        if issue_summary:
-            print(f"\n🚨 ISSUE BREAKDOWN:")
-            print("-" * 50)
-            
-            critical_issues = {k: v for k, v in issue_summary.items() if 'REQUIRED' in k or 'BUSINESS RULE' in k}
-            format_issues = {k: v for k, v in issue_summary.items() if k not in critical_issues}
-            
-            if critical_issues:
-                print("   CRITICAL ISSUES:")
-                for issue_type, count in sorted(critical_issues.items(), key=lambda x: x[1], reverse=True):
-                    print(f"   ❌ {issue_type:<40}: {count:>5} occurrences")
-            
-            if format_issues:
-                print("   FORMAT/VALIDATION ISSUES:")
-                for issue_type, count in sorted(format_issues.items(), key=lambda x: x[1], reverse=True):
-                    print(f"   ⚠️ {issue_type:<40}: {count:>5} occurrences")
+        print(f"   XSD Compliant Rows: {total_rows - len(all_issues):,}")
+        print(f"   XSD Violation Rows: {len(all_issues):,}")
+        print(f"   XSD Compliance Rate: {((total_rows - len(all_issues)) / total_rows * 100):.1f}%")
         
         if all_issues:
-            print(f"\n📋 SAMPLE PROBLEMATIC TRAN_IDs (First 10):")
-            print("-" * 50)
-            for i, issue_data in enumerate(all_issues[:10], 1):
-                severity = "🔥" if len(issue_data['issues']) > 5 else "⚠️" if len(issue_data['issues']) > 2 else "ℹ️"
-                print(f"   {i:2d}. {severity} Row {issue_data['row']:4d} | TRAN_ID: '{issue_data['tran_id']}' | {len(issue_data['issues'])} issues")
+            print(f"\n🚨 XSD VIOLATIONS BY TRAN_ID:")
+            print("-" * 60)
+            
+            for i, issue_data in enumerate(all_issues[:20], 1):  # Show first 20
+                print(f"   {i:2d}. Row {issue_data['row']:4d} | TRAN_ID: '{issue_data['tran_id']}' | {len(issue_data['xsd_errors'])} XSD errors")
+                
+                for error in issue_data['xsd_errors'][:3]:  # Show first 3 errors
+                    print(f"       🚨 {error}")
+                
+                if len(issue_data['xsd_errors']) > 3:
+                    print(f"       ... and {len(issue_data['xsd_errors']) - 3} more XSD errors")
+            
+            if len(all_issues) > 20:
+                print(f"\n   ... and {len(all_issues) - 20} more rows with XSD violations")
         
-        print(f"\n🎯 NEXT STEPS:")
-        print("   1. ❌ Fix all REQUIRED field violations first")
-        print("   2. 🚨 Address BUSINESS RULE violations")
-        print("   3. ⚠️ Clean up format and validation issues")
-        print("   4. 🗺️ Consider mapping unmapped fields if relevant to pacs.008")
-        print("   5. ✅ Re-run validation after fixes")
+        print(f"\n🎯 XSD COMPLIANCE SUMMARY:")
+        print("   ✅ XSD compliant rows can be processed as valid pacs.008 messages")
+        print("   ❌ XSD violation rows must be fixed before Fed processing")
+        print("   🚨 All errors are based on official pacs.008.001.08.xsd schema")
+        print("   📋 Fix XSD violations to ensure Fed ISO 20022 compliance")
         
         print("="*80)
 
-# Usage function
+# Usage
 def main():
-    validator = CSVFedPacs008Validator()
+    validator = TrueXSDPacs008Validator()
     
     # Update with your CSV file path
-    csv_file_path = "wire_transfer_data.csv"  # Change this to your file path
+    csv_file_path = "wire_transfer_data.csv"  # Change to your file
     
-    print("🚀 CSV Federal Reserve ISO 20022 pacs.008 Validator")
-    print("📄 Designed for Mac CSV files with ^M line endings")
-    print("🗺️ Using comprehensive field mapping to pacs.008 XSD")
+    print("🚀 TRUE XSD pacs.008.001.08 Validator")
+    print("📄 Uses official ISO 20022 XSD schema")
+    print("🔍 Converts CSV to XML and validates against XSD")
     
     issues = validator.process_csv_file(csv_file_path)
     
     if issues is not None:
-        print(f"\n✅ Validation completed successfully!")
-        print(f"📊 Found {len(issues)} rows with pacs.008 compliance issues")
-        print(f"🔍 Each TRAN_ID and its issues were printed above")
+        print(f"\n✅ XSD validation completed!")
+        print(f"📊 {len(issues)} rows have XSD schema violations")
+        print(f"🎯 Fix XSD errors for true Fed ISO 20022 compliance")
     else:
-        print("❌ Validation failed. Please check the file path and format.")
+        print("❌ Validation failed. Check file path and XSD schema.")
 
 if __name__ == "__main__":
     main()
