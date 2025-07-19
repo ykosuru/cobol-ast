@@ -480,100 +480,167 @@ def get_xsd_filename():
             return xsd_file
         else:
             print(f"❌ XSD file not found: {os.path.abspath(xsd_file)}")
-            print(f"💡 Download from: https://github.com/phoughton/pyiso20022/blob/main/xsd/payments_clearing_and_settlement/pacs.008/pacs.008.001.08.xsd")
+            print(f"💡 Download from: https://github.com/phoughton/pyiso20022/raw/main/xsd/payments_clearing_and_settlement/pacs.008/pacs.008.001.08.xsd")
             retry = input("🔄 Try again? (y/n): ").strip().lower()
             if retry != 'y':
                 return None
 
-# Usage function with interactive input
+# Main functions
 def main():
+    """Interactive mode - prompts user for files"""
     print("🚀 TRUE XSD pacs.008.001.08 Validator")
-    print("="*50)
+    print("="*60)
     print("📄 Uses official ISO 20022 XSD schema")
     print("🔍 Converts CSV to XML and validates against XSD")
     print("📋 Handles Mac CSV files with ^M line endings")
+    print("🧠 Intelligent field mapping for CLRG determination")
     
     # Get XSD file
+    print("\n" + "="*60)
+    print("STEP 1: XSD SCHEMA FILE")
+    print("="*60)
     xsd_file = get_xsd_filename()
     if not xsd_file:
         print("❌ Cannot proceed without XSD file. Exiting.")
         return
     
     # Get CSV file
+    print("\n" + "="*60)
+    print("STEP 2: CSV DATA FILE") 
+    print("="*60)
     csv_file = get_csv_filename()
     if not csv_file:
         print("❌ Cannot proceed without CSV file. Exiting.")
         return
     
     # Initialize validator with local XSD
-    print(f"\n🔧 Initializing validator...")
+    print("\n" + "="*60)
+    print("STEP 3: INITIALIZING VALIDATOR")
+    print("="*60)
+    print(f"🔧 Loading XSD schema from: {xsd_file}")
+    print(f"📊 Preparing to process CSV: {csv_file}")
+    
     validator = TrueXSDPacs008Validator(xsd_file)
     
     # Check if schema loaded successfully
     if not validator.schema:
         print("❌ Failed to load XSD schema. Cannot proceed.")
+        print("💡 Make sure you have the correct pacs.008.001.08.xsd file")
         return
     
     # Process the CSV file
-    print(f"\n🚀 Starting validation of {csv_file}")
+    print("\n" + "="*60)
+    print("STEP 4: VALIDATION PROCESS")
+    print("="*60)
+    print(f"🚀 Starting validation of {csv_file}")
+    print("🧠 Using intelligent CLRG field determination")
+    
     issues = validator.process_csv_file(csv_file)
     
+    # Final results
+    print("\n" + "="*60)
+    print("FINAL RESULTS")
+    print("="*60)
+    
     if issues is not None:
-        print(f"\n✅ XSD validation completed!")
-        print(f"📊 {len(issues)} rows have XSD schema violations")
         if len(issues) == 0:
-            print(f"🎉 All rows are XSD compliant! Ready for Fed processing.")
+            print("🎉 SUCCESS! All rows are XSD compliant!")
+            print("✅ Your data is ready for Fed ISO 20022 processing")
+            print("📤 Generated XML messages will pass XSD validation")
         else:
-            print(f"🎯 Fix XSD errors for true Fed ISO 20022 compliance")
+            print(f"⚠️  PARTIAL SUCCESS: {len(issues)} rows have XSD violations")
+            print("🔧 Fix the reported issues for full compliance")
+            print("📋 Review the detailed report above for specific problems")
+        
+        print(f"\n📊 Validation Summary:")
+        print(f"   ✅ XSD Schema: {xsd_file}")
+        print(f"   📄 CSV File: {csv_file}")
+        print(f"   🎯 Compliance: {'100%' if len(issues) == 0 else 'Partial'}")
+        
     else:
-        print("❌ Validation failed. Check file format and try again.")
+        print("❌ VALIDATION FAILED")
+        print("🔍 Check file format and try again")
+        print("💡 Ensure CSV has proper headers and XSD is valid")
 
 def main_with_args():
-    """Alternative main function that accepts command line arguments"""
+    """Command line mode - accepts arguments"""
     if len(sys.argv) < 2:
+        print("🚀 TRUE XSD pacs.008.001.08 Validator")
+        print("="*50)
         print("Usage: python validator.py <csv_file> [xsd_file]")
-        print("  csv_file: Path to your CSV file")
-        print("  xsd_file: Optional path to XSD file (default: pacs.008.001.08.xsd)")
-        print("\nOr run without arguments for interactive mode:")
+        print("")
+        print("Arguments:")
+        print("  csv_file    Path to your CSV file (required)")
+        print("  xsd_file    Path to XSD file (optional, default: pacs.008.001.08.xsd)")
+        print("")
+        print("Examples:")
+        print("  python validator.py data.csv")
+        print("  python validator.py /path/to/data.csv /path/to/schema.xsd")
+        print("")
+        print("Or run without arguments for interactive mode:")
+        print("  python validator.py")
+        print("")
         main()
         return
     
     csv_file = sys.argv[1]
     xsd_file = sys.argv[2] if len(sys.argv) > 2 else "pacs.008.001.08.xsd"
     
-    print(f"🚀 TRUE XSD pacs.008.001.08 Validator")
+    print(f"🚀 TRUE XSD pacs.008.001.08 Validator (Command Line Mode)")
+    print("="*70)
     print(f"📄 CSV File: {csv_file}")
     print(f"📋 XSD File: {xsd_file}")
+    print(f"🧠 Intelligent CLRG field determination: ENABLED")
     
-    # Check files exist
+    # Validate files exist
     if not os.path.exists(csv_file):
         print(f"❌ CSV file not found: {csv_file}")
+        print(f"💡 Make sure the file path is correct")
         return
     
     if not os.path.exists(xsd_file):
         print(f"❌ XSD file not found: {xsd_file}")
+        print(f"💡 Download from: https://github.com/phoughton/pyiso20022/raw/main/xsd/payments_clearing_and_settlement/pacs.008/pacs.008.001.08.xsd")
         return
     
     # Initialize and run validator
+    print(f"\n🔧 Initializing validator...")
     validator = TrueXSDPacs008Validator(xsd_file)
     
     if not validator.schema:
         print("❌ Failed to load XSD schema.")
         return
     
+    print(f"🚀 Starting validation...")
     issues = validator.process_csv_file(csv_file)
     
+    # Command line results
     if issues is not None:
-        print(f"\n✅ Validation completed: {len(issues)} rows with XSD violations")
+        total_issues = len(issues)
+        if total_issues == 0:
+            print(f"\n✅ SUCCESS: All rows are XSD compliant!")
+            sys.exit(0)
+        else:
+            print(f"\n⚠️  ISSUES FOUND: {total_issues} rows with XSD violations")
+            sys.exit(1)
     else:
-        print("❌ Validation failed.")
+        print("❌ VALIDATION FAILED")
+        sys.exit(2)
 
 if __name__ == "__main__":
-    # Check if command line arguments provided
-    if len(sys.argv) > 1:
-        main_with_args()
-    else:
-        main(), '').replace('€', '').strip()
+    try:
+        # Check if command line arguments provided
+        if len(sys.argv) > 1:
+            main_with_args()
+        else:
+            main()
+    except KeyboardInterrupt:
+        print("\n\n⏹️  Validation interrupted by user")
+        print("👋 Goodbye!")
+    except Exception as e:
+        print(f"\n❌ Unexpected error occurred: {str(e)}")
+        print("💡 Please check your input files and try again")
+        sys.exit(3), '').replace('€', '').strip()
             
             if clean_value.startswith('(') and clean_value.endswith(')'):
                 clean_value = '-' + clean_value[1:-1]
