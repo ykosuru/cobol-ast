@@ -7,7 +7,7 @@ import logging
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-class FedPacs008Validator:
+class CSVFedPacs008Validator:
     def __init__(self):
         # ISO 4217 Currency codes
         self.valid_currencies = {
@@ -16,7 +16,30 @@ class FedPacs008Validator:
             'SGD', 'HKD', 'NZD', 'ZAR', 'BRL', 'MXN', 'INR', 'THB', 'MYR', 'IDR'
         }
         
-        # Field mappings to pacs.008 elements
+        # Expected CSV column order (based on your original field list)
+        self.expected_columns = [
+            'TRAN_ID', 'TXN_DATE', 'TDN_NUMBER', 'SBK_REF_NUM', 'PROC_DATE', 'PAY_DATE', 
+            'TXN_MEMO', 'SEND_DATE', 'REPETITIVE_ID', 'SOURCE_CD', 'INSTR_ADV_TYPE', 'STS_CD', 
+            'CAN_MOUNT_TYPE_CD', 'SUBTYPE_IN_TYPE_CD', 'IN_SUBTYPE', 'ISO20022_MSGTYPE_IN', 
+            'IS_COVER_PAYMENT', 'FED_IMAD', 'FED_OMAD', 'FED_ISN', 'FED_OSN', 'SWF_ISN', 
+            'SWF_OSN', 'CHP_ISN', 'CHP_OSN', 'CHP_SSN_1', 'CHP_SSN_6', 'SWF_IN_MIR', 
+            'SWF_OUT_MIR', 'ENTRY_PERSON', 'VERIFY_PERSON', 'REPAIR_PERSON', 'EXCEPT_PERSON', 
+            'WIRE_TYPE', 'STRAIGHT_THR_U', 'NETWORK_SND_IDTYPE', 'NETWORK_SND_ACC', 'RCV_DATE', 
+            'RCV_TIME', 'DLV_MEMO', 'DLVRY_PERSON', 'FEXCH_RATE_AMOUNT', 'CURRENCY_CODE', 
+            'FRONTIER_REF_NO', 'IDTYPE', 'CDT_ID', 'CDT_NAME1', 'CDT_NAME2', 'CDT_NAME3', 
+            'CDT_NAME4', 'CDT_ACCTG_IDTYPE', 'CDT_ACCTG_SLASH', 'CDT_ACCTG_ACCOUNT', 
+            'BBK_IDTYPE', 'BBK_ID', 'BBK_NAME1', 'BBK_NAME2', 'BBK_NAME3', 'BBK_NAME4', 
+            'IBK_IDTYPE', 'IBK_ID', 'IBK_NAME1', 'IBK_NAME2', 'IBK_NAME3', 'IBK_NAME4', 
+            'ORP_BEN_INF1', 'ORP_BEN_INF2', 'ORP_BEN_INF3', 'ORP_BEN_INF4', 'DBT_IDTYPE', 
+            'DBT_ID', 'DBT_NAME1', 'DBT_NAME_2', 'DBT_NAME_3', 'DBT_NAME_4', 'DBT_ACCTG_IDTYPE', 
+            'DBT_ACCTG_SLASH', 'DBT_ACCTG_ACCOUNT', 'SBK_IDTYPE', 'SBK_ID', 'SBK_NAME', 
+            'SBK_NAME2', 'SBK_NAME3', 'SBK_NAME4', 'OBK_IDTYPE', 'OBK_ID', 'OBK_NAME1', 
+            'OBK_NAME2', 'OBK_NAME3', 'OBK_NAME4', 'OBK_REF_NUM', 'ORP_IDTYPE', 'ORP_ID', 
+            'ORP_NAME1', 'ORP_NAME2', 'ORP_NAME3', 'ORP_NAME4', 'ORP_REF_NUM', 'FTR_EXP_STATE', 
+            'FTR_EXP_SUBSTATE'
+        ]
+        
+        # Field mappings to pacs.008 elements (from your document)
         self.field_mappings = {
             # Message Header
             'TRAN_ID': {'pacs_element': 'GrpHdr/MsgId', 'max_length': 35, 'required': True, 'type': 'alphanumeric'},
@@ -79,7 +102,7 @@ class FedPacs008Validator:
             'IS_COVER_PAYMENT': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/IsCoverPayment', 'required': False, 'type': 'boolean'},
             'STRAIGHT_THR_U': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/StraightThrough', 'required': False, 'type': 'boolean'},
             
-            # Network Specific Fields (Supplementary Data)
+            # Network Specific Fields
             'SOURCE_CD': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/SourceCode', 'required': False, 'type': 'code', 'values': ['SWF', 'FED', 'RTN']},
             'INSTR_ADV_TYPE': {'pacs_element': 'CdtTrfTxInf/SplmtryData/Envlp/InstructionAdviceType', 'required': False, 'type': 'code', 'values': ['CHP', 'FED']},
             
@@ -125,11 +148,80 @@ class FedPacs008Validator:
         # Validation patterns
         self.patterns = {
             'bic': r'^[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}([A-Z0-9]{3})?$',
-            'fedwire_id': r'^[0-9]{8}[0-9]{8}$',  # YYYYMMDDXXXXXXXX format
-            'swift_mir': r'^[0-9]{6}[A-Z]{4}[A-Z0-9]{4}[0-9]{6}[0-9]{4}$',  # SWIFT MIR format
+            'fedwire_id': r'^[0-9]{8}[0-9]{8}$',
+            'swift_mir': r'^[0-9]{6}[A-Z]{4}[A-Z0-9]{4}[0-9]{6}[0-9]{4}$',
             'uuid': r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
-            'iban': r'^[A-Z]{2}[0-9]{2}[A-Z0-9]{4}[0-9]{7}([A-Z0-9]?){0,16}$'
         }
+    
+    def preprocess_csv_file(self, file_path):
+        """Preprocess Mac CSV file with ^M line endings"""
+        print(f"🔄 Preprocessing CSV file: {file_path}")
+        
+        try:
+            # Read the raw file content
+            with open(file_path, 'rb') as f:
+                raw_content = f.read()
+            
+            # Decode and handle different encodings
+            try:
+                content = raw_content.decode('utf-8')
+            except UnicodeDecodeError:
+                try:
+                    content = raw_content.decode('latin-1')
+                except UnicodeDecodeError:
+                    content = raw_content.decode('cp1252')
+            
+            print(f"📄 File encoding detected and decoded")
+            
+            # Handle Mac line endings (^M = \r)
+            content = content.replace('\r\n', '\n')  # Windows to Unix
+            content = content.replace('\r', '\n')    # Mac to Unix
+            
+            # Split into lines
+            lines = content.split('\n')
+            lines = [line.strip() for line in lines if line.strip()]
+            
+            print(f"📊 Found {len(lines)} non-empty lines")
+            
+            if len(lines) < 2:
+                raise ValueError("CSV file must have at least header and one data row")
+            
+            # Parse header
+            header_line = lines[0]
+            headers = [h.strip().strip('"') for h in header_line.split(',')]
+            
+            print(f"📋 CSV Headers found: {len(headers)} columns")
+            print(f"   First 10 headers: {headers[:10]}")
+            
+            # Parse data rows
+            data_rows = []
+            for i, line in enumerate(lines[1:], 1):
+                if line.strip():
+                    # Simple CSV parsing (handles basic cases)
+                    values = [v.strip().strip('"') for v in line.split(',')]
+                    
+                    # Pad with empty values if row has fewer columns
+                    while len(values) < len(headers):
+                        values.append('')
+                    
+                    # Truncate if row has more columns
+                    values = values[:len(headers)]
+                    
+                    data_rows.append(values)
+            
+            print(f"✅ Parsed {len(data_rows)} data rows")
+            
+            # Create DataFrame
+            df = pd.DataFrame(data_rows, columns=headers)
+            
+            # Clean up common issues
+            df = df.replace(['', 'NULL', 'null', 'N/A', 'n/a'], pd.NA)
+            
+            return df
+            
+        except Exception as e:
+            print(f"❌ Error preprocessing CSV: {str(e)}")
+            return None
     
     def is_empty_or_null(self, value):
         """Check if value is null, NaN, empty string, or whitespace only"""
@@ -137,229 +229,17 @@ class FedPacs008Validator:
             return True
         if value is None:
             return True
-        if str(value).strip() == '' or str(value).strip().lower() in ['null', 'nan', 'none']:
+        if str(value).strip() == '' or str(value).strip().lower() in ['null', 'nan', 'none', 'n/a']:
             return True
         return False
     
-    def validate_text_field(self, value, field_name, mapping):
-        """Validate text fields for XML compliance and length"""
-        issues = []
-        if self.is_empty_or_null(value):
-            return issues
-        
-        value_str = str(value).strip()
-        
-        # Check XML reserved characters
-        for char in self.xml_reserved:
-            if char in value_str:
-                issues.append(f"{field_name}: Contains XML reserved character '{char}' - needs escaping")
-        
-        # Check length limits
-        if 'max_length' in mapping and len(value_str) > mapping['max_length']:
-            issues.append(f"{field_name}: Length {len(value_str)} exceeds pacs.008 limit of {mapping['max_length']}")
-        
-        # Check for invalid characters (basic ASCII check)
-        if not all(ord(c) < 128 for c in value_str):
-            issues.append(f"{field_name}: Contains non-ASCII characters that may not be pacs.008 compliant")
-        
-        return issues
-    
-    def validate_amount(self, value, field_name):
-        """Validate monetary amount according to pacs.008 standards"""
-        issues = []
-        if self.is_empty_or_null(value):
-            return issues
-        
-        try:
-            # Clean the value
-            clean_value = str(value).strip()
-            
-            # Remove currency symbols and formatting
-            for symbol in ['$', '€', '£', '¥', '₹', ',', ' ']:
-                clean_value = clean_value.replace(symbol, '')
-            
-            # Handle accounting format negatives
-            if clean_value.startswith('(') and clean_value.endswith(')'):
-                clean_value = '-' + clean_value[1:-1]
-            
-            if not clean_value:
-                return issues
-            
-            # Convert to Decimal for precision
-            amount = Decimal(clean_value)
-            
-            # pacs.008 validations
-            if amount < 0:
-                issues.append(f"{field_name}: Negative amounts not typically allowed in pacs.008")
-            
-            if amount == 0:
-                issues.append(f"{field_name}: Zero amounts should be validated for business logic")
-            
-            # Check decimal places (max 5 for pacs.008)
-            if '.' in clean_value:
-                decimal_places = len(clean_value.split('.')[1])
-                if decimal_places > 5:
-                    issues.append(f"{field_name}: Too many decimal places ({decimal_places}), pacs.008 allows max 5")
-            
-            # Check total digits (max 18 digits before decimal)
-            integer_part = str(int(abs(amount)))
-            if len(integer_part) > 18:
-                issues.append(f"{field_name}: Too many digits ({len(integer_part)}), pacs.008 allows max 18")
-            
-        except (ValueError, InvalidOperation):
-            issues.append(f"{field_name}: Invalid amount format - cannot convert to decimal")
-        
-        return issues
-    
-    def validate_date(self, value, field_name):
-        """Validate date format for pacs.008 (ISO 8601)"""
-        issues = []
-        if self.is_empty_or_null(value):
-            return issues
-        
-        date_str = str(value).strip()
-        
-        # Common date formats to try
-        date_formats = [
-            '%Y-%m-%d',              # ISO format (preferred)
-            '%Y-%m-%dT%H:%M:%S',     # ISO datetime
-            '%Y-%m-%d %H:%M:%S',     # Space separated datetime
-            '%m/%d/%Y',              # US format
-            '%d/%m/%Y',              # European format
-            '%Y/%m/%d',              # Alternative
-        ]
-        
-        parsed = False
-        for fmt in date_formats:
-            try:
-                datetime.strptime(date_str, fmt)
-                parsed = True
-                if fmt not in ['%Y-%m-%d', '%Y-%m-%dT%H:%M:%S']:
-                    issues.append(f"{field_name}: Date format '{date_str}' should be ISO 8601 (YYYY-MM-DD)")
-                break
-            except ValueError:
-                continue
-        
-        if not parsed:
-            issues.append(f"{field_name}: Invalid date format '{date_str}' - not pacs.008 compliant")
-        
-        return issues
-    
-    def validate_currency_code(self, value):
-        """Validate ISO 4217 currency code"""
-        issues = []
-        if self.is_empty_or_null(value):
-            return issues
-        
-        currency = str(value).strip().upper()
-        
-        if len(currency) != 3:
-            issues.append(f"CURRENCY_CODE: '{currency}' must be exactly 3 characters")
-        
-        if currency not in self.valid_currencies:
-            issues.append(f"CURRENCY_CODE: '{currency}' is not a valid ISO 4217 currency code")
-        
-        if str(value) != currency:
-            issues.append(f"CURRENCY_CODE: Should be uppercase ('{currency}' instead of '{value}')")
-        
-        return issues
-    
-    def validate_bic_code(self, value, field_name):
-        """Validate BIC/SWIFT code format"""
-        issues = []
-        if self.is_empty_or_null(value):
-            return issues
-        
-        bic = str(value).strip().upper()
-        
-        if not re.match(self.patterns['bic'], bic):
-            issues.append(f"{field_name}: Invalid BIC format '{value}' - should be 8 or 11 characters (BANK CODE + COUNTRY + LOCATION + optional BRANCH)")
-        
-        if len(bic) not in [8, 11]:
-            issues.append(f"{field_name}: BIC length should be 8 or 11 characters, got {len(bic)}")
-        
-        return issues
-    
-    def validate_boolean_field(self, value, field_name):
-        """Validate boolean fields"""
-        issues = []
-        if self.is_empty_or_null(value):
-            return issues
-        
-        value_str = str(value).strip().lower()
-        valid_values = ['true', 'false', '1', '0', 'yes', 'no', 'y', 'n']
-        
-        if value_str not in valid_values:
-            issues.append(f"{field_name}: Invalid boolean value '{value}' - should be true/false or equivalent")
-        
-        return issues
-    
-    def validate_code_field(self, value, field_name, mapping):
-        """Validate code fields with predefined values"""
-        issues = []
-        if self.is_empty_or_null(value):
-            return issues
-        
-        value_str = str(value).strip().upper()
-        
-        if 'values' in mapping:
-            if value_str not in mapping['values']:
-                issues.append(f"{field_name}: Invalid value '{value}' - allowed values: {mapping['values']}")
-        
-        return issues
-    
-    def validate_specialized_field(self, value, field_name, field_type):
-        """Validate specialized field types"""
-        issues = []
-        if self.is_empty_or_null(value):
-            return issues
-        
-        value_str = str(value).strip()
-        
-        if field_type == 'fedwire_id':
-            if not re.match(self.patterns['fedwire_id'], value_str):
-                issues.append(f"{field_name}: Invalid Fedwire ID format - should be 16 digits (YYYYMMDDXXXXXXXX)")
-        
-        elif field_type == 'swift_mir':
-            if not re.match(self.patterns['swift_mir'], value_str):
-                issues.append(f"{field_name}: Invalid SWIFT MIR format")
-        
-        elif field_type == 'uuid':
-            if not re.match(self.patterns['uuid'], value_str):
-                issues.append(f"{field_name}: Invalid UUID format")
-        
-        elif field_type == 'numeric':
-            try:
-                int(value_str)
-            except ValueError:
-                issues.append(f"{field_name}: Should be numeric")
-        
-        elif field_type == 'account':
-            # Basic account number validation
-            if len(value_str) > 34:
-                issues.append(f"{field_name}: Account number too long (max 34 characters)")
-            if not re.match(r'^[A-Za-z0-9]+$', value_str):
-                issues.append(f"{field_name}: Account number contains invalid characters")
-        
-        return issues
-    
-    def concatenate_name_fields(self, name_fields):
-        """Concatenate multiple name fields"""
-        names = []
-        for name in name_fields:
-            if not self.is_empty_or_null(name):
-                clean_name = str(name).strip()
-                if clean_name:
-                    names.append(clean_name)
-        return ' '.join(names)
-    
-    def validate_field(self, value, field_name, mapping):
-        """Main field validation dispatcher"""
+    def validate_pacs008_field(self, value, field_name, mapping):
+        """Validate field against pacs.008 XSD rules"""
         issues = []
         
         # Check if required field is missing
         if mapping.get('required', False) and self.is_empty_or_null(value):
-            issues.append(f"{field_name}: REQUIRED field is missing - mapped to pacs.008 {mapping['pacs_element']}")
+            issues.append(f"❌ REQUIRED field '{field_name}' is missing (pacs.008: {mapping['pacs_element']})")
             return issues
         
         # Skip validation if empty and not required
@@ -367,473 +247,407 @@ class FedPacs008Validator:
             return issues
         
         field_type = mapping.get('type', 'text')
+        value_str = str(value).strip()
         
-        # Dispatch to appropriate validator
-        if field_type == 'text':
-            issues.extend(self.validate_text_field(value, field_name, mapping))
-        elif field_type == 'amount':
+        # Universal validations first
+        # 1. Length validation
+        if 'max_length' in mapping and len(value_str) > mapping['max_length']:
+            issues.append(f"⚠️ {field_name}: Length {len(value_str)} exceeds pacs.008 limit of {mapping['max_length']}")
+        
+        # 2. XML reserved characters
+        for char in self.xml_reserved:
+            if char in value_str:
+                issues.append(f"⚠️ {field_name}: Contains XML reserved character '{char}' - needs escaping")
+        
+        # 3. ASCII compliance
+        if not all(ord(c) < 128 for c in value_str):
+            issues.append(f"⚠️ {field_name}: Contains non-ASCII characters - may not be pacs.008 compliant")
+        
+        # Type-specific validations
+        if field_type == 'amount':
             issues.extend(self.validate_amount(value, field_name))
         elif field_type == 'currency':
-            issues.extend(self.validate_currency_code(value))
+            issues.extend(self.validate_currency(value, field_name))
         elif field_type in ['date', 'datetime']:
-            issues.extend(self.validate_date(value, field_name))
+            issues.extend(self.validate_date(value, field_name, field_type))
         elif field_type == 'bic':
-            issues.extend(self.validate_bic_code(value, field_name))
+            issues.extend(self.validate_bic(value, field_name))
         elif field_type == 'boolean':
-            issues.extend(self.validate_boolean_field(value, field_name))
+            issues.extend(self.validate_boolean(value, field_name))
         elif field_type == 'code':
-            issues.extend(self.validate_code_field(value, field_name, mapping))
-        elif field_type in ['fedwire_id', 'swift_mir', 'uuid', 'numeric', 'account']:
-            issues.extend(self.validate_specialized_field(value, field_name, field_type))
-        elif field_type == 'alphanumeric':
-            issues.extend(self.validate_text_field(value, field_name, mapping))
+            issues.extend(self.validate_code(value, field_name, mapping))
+        elif field_type == 'fedwire_id':
+            issues.extend(self.validate_fedwire_id(value, field_name))
+        elif field_type == 'swift_mir':
+            issues.extend(self.validate_swift_mir(value, field_name))
+        elif field_type == 'uuid':
+            issues.extend(self.validate_uuid(value, field_name))
+        elif field_type == 'numeric':
+            issues.extend(self.validate_numeric(value, field_name))
+        elif field_type == 'account':
+            issues.extend(self.validate_account(value, field_name))
         
         return issues
     
-    def validate_business_rules(self, row):
-        """Validate business rules and cross-field dependencies"""
+    def validate_amount(self, value, field_name):
+        """Validate amount field"""
+        issues = []
+        try:
+            clean_value = str(value).replace(',', '').replace('$', '').replace('€', '').strip()
+            if clean_value.startswith('(') and clean_value.endswith(')'):
+                clean_value = '-' + clean_value[1:-1]
+            
+            amount = Decimal(clean_value)
+            
+            if amount < 0:
+                issues.append(f"⚠️ {field_name}: Negative amounts not typically allowed in pacs.008")
+            if amount == 0:
+                issues.append(f"ℹ️ {field_name}: Zero amount - verify business logic")
+            
+            # Check decimal places (max 5)
+            if '.' in clean_value and len(clean_value.split('.')[1]) > 5:
+                issues.append(f"⚠️ {field_name}: Too many decimal places (max 5 for pacs.008)")
+            
+            # Check total digits (max 18 before decimal)
+            integer_part = str(int(abs(amount)))
+            if len(integer_part) > 18:
+                issues.append(f"⚠️ {field_name}: Too many digits (max 18 for pacs.008)")
+                
+        except (ValueError, InvalidOperation):
+            issues.append(f"❌ {field_name}: Invalid amount format")
+        
+        return issues
+    
+    def validate_currency(self, value, field_name):
+        """Validate ISO 4217 currency code"""
+        issues = []
+        currency = str(value).strip().upper()
+        
+        if len(currency) != 3:
+            issues.append(f"❌ {field_name}: Currency code must be 3 characters")
+        
+        if currency not in self.valid_currencies:
+            issues.append(f"❌ {field_name}: '{currency}' not a valid ISO 4217 currency")
+        
+        if str(value) != currency:
+            issues.append(f"⚠️ {field_name}: Should be uppercase")
+        
+        return issues
+    
+    def validate_date(self, value, field_name, field_type):
+        """Validate date format for pacs.008 (ISO 8601)"""
+        issues = []
+        date_str = str(value).strip()
+        
+        formats = ['%Y-%m-%d', '%Y-%m-%dT%H:%M:%S', '%m/%d/%Y', '%d/%m/%Y', '%Y/%m/%d']
+        
+        parsed = False
+        for fmt in formats:
+            try:
+                datetime.strptime(date_str, fmt)
+                parsed = True
+                if fmt not in ['%Y-%m-%d', '%Y-%m-%dT%H:%M:%S']:
+                    issues.append(f"⚠️ {field_name}: Should use ISO 8601 format (YYYY-MM-DD)")
+                break
+            except ValueError:
+                continue
+        
+        if not parsed:
+            issues.append(f"❌ {field_name}: Invalid date format")
+        
+        return issues
+    
+    def validate_bic(self, value, field_name):
+        """Validate BIC code"""
+        issues = []
+        bic = str(value).strip().upper()
+        
+        if not re.match(self.patterns['bic'], bic):
+            issues.append(f"❌ {field_name}: Invalid BIC format")
+        
+        if len(bic) not in [8, 11]:
+            issues.append(f"❌ {field_name}: BIC must be 8 or 11 characters")
+        
+        return issues
+    
+    def validate_boolean(self, value, field_name):
+        """Validate boolean field"""
+        issues = []
+        value_str = str(value).strip().lower()
+        valid_values = ['true', 'false', '1', '0', 'yes', 'no', 'y', 'n']
+        
+        if value_str not in valid_values:
+            issues.append(f"❌ {field_name}: Invalid boolean value")
+        
+        return issues
+    
+    def validate_code(self, value, field_name, mapping):
+        """Validate code field with predefined values"""
+        issues = []
+        if 'values' in mapping:
+            value_str = str(value).strip().upper()
+            if value_str not in mapping['values']:
+                issues.append(f"❌ {field_name}: Invalid value '{value}' - allowed: {mapping['values']}")
+        
+        return issues
+    
+    def validate_fedwire_id(self, value, field_name):
+        """Validate Fedwire ID format"""
+        issues = []
+        if not re.match(self.patterns['fedwire_id'], str(value).strip()):
+            issues.append(f"❌ {field_name}: Invalid Fedwire ID format (should be 16 digits)")
+        
+        return issues
+    
+    def validate_swift_mir(self, value, field_name):
+        """Validate SWIFT MIR format"""
+        issues = []
+        if not re.match(self.patterns['swift_mir'], str(value).strip()):
+            issues.append(f"❌ {field_name}: Invalid SWIFT MIR format")
+        
+        return issues
+    
+    def validate_uuid(self, value, field_name):
+        """Validate UUID format"""
+        issues = []
+        if not re.match(self.patterns['uuid'], str(value).strip()):
+            issues.append(f"❌ {field_name}: Invalid UUID format")
+        
+        return issues
+    
+    def validate_numeric(self, value, field_name):
+        """Validate numeric field"""
+        issues = []
+        try:
+            int(str(value).strip())
+        except ValueError:
+            issues.append(f"❌ {field_name}: Should be numeric")
+        
+        return issues
+    
+    def validate_account(self, value, field_name):
+        """Validate account number"""
+        issues = []
+        value_str = str(value).strip()
+        
+        if len(value_str) > 34:
+            issues.append(f"⚠️ {field_name}: Account number too long (max 34 chars)")
+        
+        if not re.match(r'^[A-Za-z0-9]+, value_str):
+            issues.append(f"⚠️ {field_name}: Account contains invalid characters")
+        
+        return issues
+    
+    def validate_csv_row(self, row, row_index, headers):
+        """Validate a complete CSV row against pacs.008"""
+        issues = []
+        tran_id = row[0] if len(row) > 0 else 'N/A'  # First column is TRAN_ID
+        
+        print(f"🔍 Row {row_index:4d}: TRAN_ID = '{tran_id}'")
+        
+        # Validate each field
+        for col_index, (header, value) in enumerate(zip(headers, row)):
+            if header in self.field_mappings:
+                mapping = self.field_mappings[header]
+                field_issues = self.validate_pacs008_field(value, header, mapping)
+                
+                if field_issues:
+                    print(f"    📋 Column {col_index+1:2d} ({header}): {len(field_issues)} issues")
+                    for issue in field_issues:
+                        print(f"       {issue}")
+                    issues.extend(field_issues)
+                else:
+                    print(f"    ✅ Column {col_index+1:2d} ({header}): Valid")
+            else:
+                if not self.is_empty_or_null(value):
+                    print(f"    ⚠️ Column {col_index+1:2d} ({header}): No pacs.008 mapping defined")
+                    issues.append(f"ℹ️ {header}: No pacs.008 mapping defined")
+                else:
+                    print(f"    📝 Column {col_index+1:2d} ({header}): Empty (no mapping)")
+        
+        # Business rule validations
+        business_issues = self.validate_business_rules(row, headers)
+        if business_issues:
+            print(f"    🚨 Business Rules: {len(business_issues)} violations")
+            for issue in business_issues:
+                print(f"       {issue}")
+            issues.extend(business_issues)
+        
+        if not issues:
+            print(f"    ✅ Row {row_index} is fully compliant!")
+        else:
+            print(f"    ❌ Row {row_index} has {len(issues)} total issues")
+        
+        print("-" * 80)
+        
+        return issues, tran_id
+    
+    def validate_business_rules(self, row, headers):
+        """Validate business rules across fields"""
         issues = []
         
-        # Rule 1: At least one debtor identification method required
+        # Create a dictionary for easier field access
+        row_dict = {header: (row[i] if i < len(row) else '') for i, header in enumerate(headers)}
+        
+        # Rule 1: At least one debtor identification
         debtor_id_fields = ['DBT_ID', 'DBT_ACCTG_ACCOUNT']
-        has_debtor_id = any(not self.is_empty_or_null(row.get(field)) for field in debtor_id_fields)
+        has_debtor_id = any(not self.is_empty_or_null(row_dict.get(field, '')) for field in debtor_id_fields)
         if not has_debtor_id:
-            issues.append("BUSINESS RULE: At least one debtor identification (DBT_ID or DBT_ACCTG_ACCOUNT) required")
+            issues.append("❌ BUSINESS RULE: Missing debtor identification (DBT_ID or DBT_ACCTG_ACCOUNT)")
         
-        # Rule 2: At least one creditor identification method required
+        # Rule 2: At least one creditor identification
         creditor_id_fields = ['CDT_ID', 'CDT_ACCTG_ACCOUNT']
-        has_creditor_id = any(not self.is_empty_or_null(row.get(field)) for field in creditor_id_fields)
+        has_creditor_id = any(not self.is_empty_or_null(row_dict.get(field, '')) for field in creditor_id_fields)
         if not has_creditor_id:
-            issues.append("BUSINESS RULE: At least one creditor identification (CDT_ID or CDT_ACCTG_ACCOUNT) required")
+            issues.append("❌ BUSINESS RULE: Missing creditor identification (CDT_ID or CDT_ACCTG_ACCOUNT)")
         
-        # Rule 3: Combined name fields length check
-        debtor_name = self.concatenate_name_fields([
-            row.get('DBT_NAME1'), row.get('DBT_NAME_2'), 
-            row.get('DBT_NAME_3'), row.get('DBT_NAME_4')
-        ])
-        if debtor_name and len(debtor_name) > 70:
-            issues.append(f"BUSINESS RULE: Combined debtor name too long ({len(debtor_name)} chars, max 70)")
+        # Rule 3: Network consistency
+        source_cd = row_dict.get('SOURCE_CD', '').strip().upper()
+        instr_adv_type = row_dict.get('INSTR_ADV_TYPE', '').strip().upper()
         
-        creditor_name = self.concatenate_name_fields([
-            row.get('CDT_NAME1'), row.get('CDT_NAME2'), 
-            row.get('CDT_NAME3'), row.get('CDT_NAME4')
-        ])
-        if creditor_name and len(creditor_name) > 70:
-            issues.append(f"BUSINESS RULE: Combined creditor name too long ({len(creditor_name)} chars, max 70)")
-        
-        # Rule 4: Network-specific field consistency
-        source_cd = row.get('SOURCE_CD', '').strip().upper()
-        instr_adv_type = row.get('INSTR_ADV_TYPE', '').strip().upper()
-        
-        # If SOURCE_CD is FED, check for FED-specific fields
         if source_cd == 'FED':
             fed_fields = ['FED_IMAD', 'FED_OMAD', 'FED_ISN', 'FED_OSN']
-            has_fed_data = any(not self.is_empty_or_null(row.get(field)) for field in fed_fields)
+            has_fed_data = any(not self.is_empty_or_null(row_dict.get(field, '')) for field in fed_fields)
             if not has_fed_data:
-                issues.append("BUSINESS RULE: SOURCE_CD=FED but no Federal Reserve data fields populated")
+                issues.append("⚠️ BUSINESS RULE: SOURCE_CD=FED but no Fed data populated")
         
-        # If SOURCE_CD is SWF, check for SWIFT-specific fields
         if source_cd == 'SWF':
             swift_fields = ['SWF_IN_MIR', 'SWF_OUT_MIR', 'SWF_ISN', 'SWF_OSN']
-            has_swift_data = any(not self.is_empty_or_null(row.get(field)) for field in swift_fields)
+            has_swift_data = any(not self.is_empty_or_null(row_dict.get(field, '')) for field in swift_fields)
             if not has_swift_data:
-                issues.append("BUSINESS RULE: SOURCE_CD=SWF but no SWIFT data fields populated")
+                issues.append("⚠️ BUSINESS RULE: SOURCE_CD=SWF but no SWIFT data populated")
         
-        # If INSTR_ADV_TYPE is CHP, check for CHIPS-specific fields
         if instr_adv_type == 'CHP':
             chips_fields = ['CHP_ISN', 'CHP_OSN', 'CHP_SSN_1', 'CHP_SSN_6']
-            has_chips_data = any(not self.is_empty_or_null(row.get(field)) for field in chips_fields)
+            has_chips_data = any(not self.is_empty_or_null(row_dict.get(field, '')) for field in chips_fields)
             if not has_chips_data:
-                issues.append("BUSINESS RULE: INSTR_ADV_TYPE=CHP but no CHIPS data fields populated")
-        
-        # Rule 5: Date consistency checks
-        txn_date = row.get('TXN_DATE')
-        proc_date = row.get('PROC_DATE')
-        pay_date = row.get('PAY_DATE')
-        
-        try:
-            if not self.is_empty_or_null(txn_date) and not self.is_empty_or_null(proc_date):
-                txn_dt = datetime.strptime(str(txn_date).strip(), '%Y-%m-%d')
-                proc_dt = datetime.strptime(str(proc_date).strip(), '%Y-%m-%d')
-                if proc_dt < txn_dt:
-                    issues.append("BUSINESS RULE: Processing date cannot be before transaction date")
-        except ValueError:
-            pass  # Date format issues will be caught by individual field validation
+                issues.append("⚠️ BUSINESS RULE: INSTR_ADV_TYPE=CHP but no CHIPS data populated")
         
         return issues
     
-    def validate_row(self, row, row_index):
-        """Validate a complete row of data"""
-        issues = []
-        
-        # Validate each mapped field
-        for field_name, mapping in self.field_mappings.items():
-            if field_name in row:
-                field_issues = self.validate_field(row[field_name], field_name, mapping)
-                issues.extend(field_issues)
-        
-        # Validate business rules
-        business_issues = self.validate_business_rules(row)
-        issues.extend(business_issues)
-        
-        return issues
-    
-    def analyze_data_completeness(self, df):
-        """Analyze field completeness and mapping coverage"""
-        completeness_report = {}
-        
-        # Group fields by pacs.008 sections
-        field_groups = {
-            'Message Header': ['TRAN_ID', 'TXN_DATE', 'TDN_NUMBER', 'SBK_REF_NUM', 'FRONTIER_REF_NO'],
-            'Transaction Info': ['FEXCH_RATE_AMOUNT', 'CURRENCY_CODE', 'PROC_DATE', 'PAY_DATE'],
-            'Debtor Party': ['DBT_ID', 'DBT_NAME1', 'DBT_NAME_2', 'DBT_NAME_3', 'DBT_NAME_4', 'DBT_ACCTG_ACCOUNT'],
-            'Creditor Party': ['CDT_ID', 'CDT_NAME1', 'CDT_NAME2', 'CDT_NAME3', 'CDT_NAME4', 'CDT_ACCTG_ACCOUNT'],
-            'Agent Banks': ['BBK_ID', 'BBK_NAME1', 'OBK_ID', 'OBK_NAME1', 'IBK_ID', 'IBK_NAME1'],
-            'Remittance Info': ['TXN_MEMO', 'ORP_BEN_INF1', 'ORP_BEN_INF2', 'ORP_BEN_INF3', 'ORP_BEN_INF4'],
-            'Federal Reserve': ['FED_IMAD', 'FED_OMAD', 'FED_ISN', 'FED_OSN'],
-            'SWIFT Network': ['SWF_IN_MIR', 'SWF_OUT_MIR', 'SWF_ISN', 'SWF_OSN'],
-            'CHIPS Network': ['CHP_ISN', 'CHP_OSN', 'CHP_SSN_1', 'CHP_SSN_6'],
-            'Control Fields': ['SOURCE_CD', 'INSTR_ADV_TYPE', 'STS_CD', 'WIRE_TYPE', 'IS_COVER_PAYMENT']
-        }
-        
-        total_rows = len(df)
-        
-        for group_name, fields in field_groups.items():
-            group_stats = {}
-            
-            for field in fields:
-                if field in df.columns:
-                    non_empty_count = sum(1 for val in df[field] if not self.is_empty_or_null(val))
-                    percentage = (non_empty_count / total_rows) * 100
-                    
-                    # Get pacs.008 mapping info
-                    mapping_info = self.field_mappings.get(field, {})
-                    pacs_element = mapping_info.get('pacs_element', 'Not mapped')
-                    is_required = mapping_info.get('required', False)
-                    
-                    group_stats[field] = {
-                        'populated': non_empty_count,
-                        'percentage': percentage,
-                        'pacs_element': pacs_element,
-                        'required': is_required
-                    }
-                else:
-                    group_stats[field] = {
-                        'populated': 0,
-                        'percentage': 0.0,
-                        'pacs_element': 'Field not found',
-                        'required': False
-                    }
-            
-            completeness_report[group_name] = group_stats
-        
-        # Check for unmapped fields
-        mapped_fields = set(self.field_mappings.keys())
-        excel_fields = set(df.columns)
-        unmapped_fields = excel_fields - mapped_fields
-        
-        if unmapped_fields:
-            completeness_report['Unmapped Fields'] = {
-                field: {
-                    'populated': sum(1 for val in df[field] if not self.is_empty_or_null(val)),
-                    'percentage': (sum(1 for val in df[field] if not self.is_empty_or_null(val)) / total_rows) * 100,
-                    'pacs_element': 'NO MAPPING DEFINED',
-                    'required': False
-                } for field in unmapped_fields
-            }
-        
-        return completeness_report
-    
-    def generate_detailed_report(self, all_issues, issue_summary, total_rows, completeness_report):
-        """Generate comprehensive validation report"""
-        print("\n" + "="*100)
-        print("FEDERAL RESERVE ISO 20022 PACS.008 COMPLIANCE VALIDATION REPORT")
-        print("="*100)
-        
-        print(f"\nEXECUTIVE SUMMARY:")
-        print("-" * 50)
-        print(f"Total Rows Processed: {total_rows:,}")
-        print(f"Rows with Issues: {len(all_issues):,}")
-        print(f"Clean Rows: {total_rows - len(all_issues):,}")
-        print(f"Compliance Rate: {((total_rows - len(all_issues)) / total_rows * 100):.1f}%")
-        
-        print(f"\nFIELD MAPPING & COMPLETENESS ANALYSIS:")
-        print("-" * 80)
-        for group_name, fields in completeness_report.items():
-            print(f"\n{group_name.upper()}:")
-            for field_name, stats in fields.items():
-                required_indicator = "⚠ REQ" if stats['required'] else "    "
-                status = "✓" if stats['percentage'] > 50 else "⚠" if stats['percentage'] > 10 else "✗"
-                
-                print(f"  {status} {required_indicator} {field_name:<25}: {stats['populated']:>4}/{total_rows} ({stats['percentage']:>5.1f}%)")
-                print(f"      └─ pacs.008: {stats['pacs_element']}")
-        
-        # Critical issues summary
-        critical_issues = {}
-        format_issues = {}
-        business_issues = {}
-        
-        for issue_type, count in issue_summary.items():
-            if 'REQUIRED' in issue_type or 'BUSINESS RULE' in issue_type:
-                critical_issues[issue_type] = count
-            elif any(keyword in issue_type for keyword in ['format', 'Invalid', 'Length', 'decimal']):
-                format_issues[issue_type] = count
-            else:
-                business_issues[issue_type] = count
-        
-        if critical_issues:
-            print(f"\nCRITICAL ISSUES (Required Fields & Business Rules):")
-            print("-" * 60)
-            for issue_type, count in sorted(critical_issues.items(), key=lambda x: x[1], reverse=True):
-                print(f"❌ {issue_type:<50}: {count:>5} occurrences")
-        
-        if format_issues:
-            print(f"\nFORMAT & VALIDATION ISSUES:")
-            print("-" * 40)
-            for issue_type, count in sorted(format_issues.items(), key=lambda x: x[1], reverse=True):
-                print(f"⚠️  {issue_type:<50}: {count:>5} occurrences")
-        
-        if business_issues:
-            print(f"\nOTHER ISSUES:")
-            print("-" * 20)
-            for issue_type, count in sorted(business_issues.items(), key=lambda x: x[1], reverse=True):
-                print(f"ℹ️  {issue_type:<50}: {count:>5} occurrences")
-        
-        # Sample problematic rows
-        if all_issues:
-            print(f"\nSAMPLE PROBLEMATIC ROWS (First 10 with TRAN_ID):")
-            print("-" * 80)
-            
-            for i, issue_data in enumerate(all_issues[:10], 1):
-                severity_icon = "🔥" if len(issue_data['issues']) > 5 else "⚠️" if len(issue_data['issues']) > 2 else "ℹ️"
-                print(f"\n{i}. {severity_icon} Row {issue_data['row']} | TRAN_ID: '{issue_data['tran_id']}' | {len(issue_data['issues'])} issues:")
-                
-                # Group issues by type for better readability
-                critical = [issue for issue in issue_data['issues'] if 'REQUIRED' in issue or 'BUSINESS RULE' in issue]
-                format_errs = [issue for issue in issue_data['issues'] if any(keyword in issue for keyword in ['Invalid', 'format', 'Length', 'decimal', 'XML'])]
-                other = [issue for issue in issue_data['issues'] if issue not in critical and issue not in format_errs]
-                
-                if critical:
-                    print(f"    🚨 CRITICAL ISSUES:")
-                    for issue in critical[:3]:  # Show max 3 critical issues
-                        print(f"       ❌ {issue}")
-                    if len(critical) > 3:
-                        print(f"       ❌ ... and {len(critical) - 3} more critical issues")
-                
-                if format_errs:
-                    print(f"    ⚠️  FORMAT ISSUES:")
-                    for issue in format_errs[:2]:  # Show max 2 format issues
-                        print(f"       🔧 {issue}")
-                    if len(format_errs) > 2:
-                        print(f"       🔧 ... and {len(format_errs) - 2} more format issues")
-                
-                if other:
-                    print(f"    ℹ️  OTHER ISSUES:")
-                    for issue in other[:2]:  # Show max 2 other issues
-                        print(f"       📝 {issue}")
-                    if len(other) > 2:
-                        print(f"       📝 ... and {len(other) - 2} more issues")
-            
-            if len(all_issues) > 10:
-                print(f"\n... and {len(all_issues) - 10} more problematic rows (see debugging summary below)")
-        
-        print(f"\nPACS.008 COMPLIANCE RECOMMENDATIONS:")
-        print("-" * 60)
-        
-        recommendations = [
-            "CRITICAL ACTIONS:",
-            "1. ❌ Populate all REQUIRED fields (TRAN_ID, TXN_DATE, FEXCH_RATE_AMOUNT, CURRENCY_CODE)",
-            "2. ❌ Ensure at least one debtor and creditor identification method",
-            "3. ❌ Verify network-specific field consistency (FED/SWF/CHP data)",
-            "",
-            "FORMAT FIXES:",
-            "4. ⚠️  Convert dates to ISO 8601 format (YYYY-MM-DD)",
-            "5. ⚠️  Validate BIC codes are 8 or 11 characters with proper format",
-            "6. ⚠️  Ensure currency codes are 3-letter ISO 4217 uppercase",
-            "7. ⚠️  Escape XML reserved characters (&, <, >, \", ') in text fields",
-            "8. ⚠️  Check field length limits per pacs.008 specifications",
-            "",
-            "BUSINESS LOGIC:",
-            "9. ℹ️  Validate cross-field dependencies and date consistency",
-            "10. ℹ️ Consider data enrichment for low-populated critical fields",
-            "11. ℹ️ Review unmapped fields for potential pacs.008 relevance",
-            "",
-            "NETWORK ROUTING:",
-            "12. 🌐 Ensure SOURCE_CD/INSTR_ADV_TYPE match populated network fields",
-            "13. 🌐 Validate Fedwire IDs, SWIFT MIRs, and CHIPS sequence numbers"
-        ]
-        
-        for rec in recommendations:
-            print(f"  {rec}")
-        
-        # Field mapping reference
-        print(f"\nFIELD MAPPING REFERENCE (Key Fields):")
-        print("-" * 50)
-        key_mappings = [
-            ('TRAN_ID', 'GrpHdr/MsgId'),
-            ('FEXCH_RATE_AMOUNT', 'CdtTrfTxInf/IntrBkSttlmAmt'),
-            ('DBT_NAME1', 'CdtTrfTxInf/Dbtr/Nm'),
-            ('CDT_NAME1', 'CdtTrfTxInf/Cdtr/Nm'),
-            ('BBK_ID', 'CdtTrfTxInf/CdtrAgt/FinInstnId/BICFI'),
-            ('FED_IMAD', 'CdtTrfTxInf/SplmtryData/Envlp/FedwireMessage/IMAD')
-        ]
-        
-        for field, pacs_path in key_mappings:
-            print(f"  {field:<20} → {pacs_path}")
-    
-    def process_excel_file(self, file_path):
-        """Main processing function"""
-        try:
-            # Read Excel file
-            df = pd.read_excel(file_path)
-            logging.info(f"Loaded Excel file with {len(df)} rows and {len(df.columns)} columns")
-            
-            print(f"\n🔍 DEBUGGING INFO - Processing {len(df)} rows...")
-            print("=" * 80)
-            
-            # Analyze completeness
-            completeness_report = self.analyze_data_completeness(df)
-            
-            # Validate each row
-            all_issues = []
-            issue_summary = {}
-            clean_rows = []
-            
-            for index, row in df.iterrows():
-                row_number = index + 1
-                tran_id = row.get('TRAN_ID', 'N/A')
-                
-                # Debug output for every row
-                print(f"📋 Processing Row {row_number:4d}: TRAN_ID = '{tran_id}'", end="")
-                
-                row_issues = self.validate_row(row, row_number)
-                
-                if row_issues:
-                    print(f" ❌ {len(row_issues)} issues found")
-                    print(f"    └─ Issues: {'; '.join(row_issues[:3])}{'...' if len(row_issues) > 3 else ''}")
-                    
-                    all_issues.append({
-                        'row': row_number,
-                        'tran_id': tran_id,
-                        'issues': row_issues
-                    })
-                    
-                    # Count issue types
-                    for issue in row_issues:
-                        issue_type = issue.split(':')[0] if ':' in issue else issue
-                        issue_summary[issue_type] = issue_summary.get(issue_type, 0) + 1
-                else:
-                    print(" ✅ Clean")
-                    clean_rows.append({'row': row_number, 'tran_id': tran_id})
-                
-                # Progress indicator for large files
-                if row_number % 100 == 0:
-                    print(f"\n📊 Progress: {row_number}/{len(df)} rows processed ({(row_number/len(df)*100):.1f}%)")
-            
-            print(f"\n🏁 Processing Complete!")
-            print(f"   ✅ Clean rows: {len(clean_rows)}")
-            print(f"   ❌ Rows with issues: {len(all_issues)}")
-            print("=" * 80)
-            
-            # Generate report
-            self.generate_detailed_report(all_issues, issue_summary, len(df), completeness_report)
-            
-            # Additional debugging summary
-            self.print_debugging_summary(all_issues, clean_rows)
-            
-            return all_issues
-            
-        except Exception as e:
-            logging.error(f"Error processing Excel file: {str(e)}")
-            print(f"❌ ERROR: {str(e)}")
-            return None
-    
-    def print_debugging_summary(self, all_issues, clean_rows):
-        """Print additional debugging information"""
-        print(f"\n" + "="*80)
-        print("🐛 DEBUGGING SUMMARY")
+    def process_csv_file(self, file_path):
+        """Main processing function for CSV file"""
+        print("🚀 Starting CSV Fed ISO 20022 pacs.008 Validation")
         print("="*80)
         
-        if clean_rows:
-            print(f"\n✅ CLEAN ROWS (First 10):")
-            print("-" * 40)
-            for i, clean_row in enumerate(clean_rows[:10], 1):
-                print(f"   {i:2d}. Row {clean_row['row']:4d}: TRAN_ID = '{clean_row['tran_id']}'")
-            
-            if len(clean_rows) > 10:
-                print(f"   ... and {len(clean_rows) - 10} more clean rows")
+        # Step 1: Preprocess CSV
+        df = self.preprocess_csv_file(file_path)
+        if df is None:
+            return None
         
-        if all_issues:
-            print(f"\n❌ PROBLEMATIC ROWS (All {len(all_issues)} rows):")
+        print(f"\n📊 DataFrame created with {len(df)} rows and {len(df.columns)} columns")
+        print(f"📋 Columns: {list(df.columns)[:10]}{'...' if len(df.columns) > 10 else ''}")
+        
+        # Step 2: Check column mapping coverage
+        mapped_columns = set(self.field_mappings.keys())
+        csv_columns = set(df.columns)
+        
+        mapped_in_csv = mapped_columns.intersection(csv_columns)
+        unmapped_in_csv = csv_columns - mapped_columns
+        
+        print(f"\n🗺️ COLUMN MAPPING ANALYSIS:")
+        print(f"   Mapped columns in CSV: {len(mapped_in_csv)}")
+        print(f"   Unmapped columns in CSV: {len(unmapped_in_csv)}")
+        if unmapped_in_csv:
+            print(f"   Unmapped: {list(unmapped_in_csv)[:5]}{'...' if len(unmapped_in_csv) > 5 else ''}")
+        
+        # Step 3: Process each row
+        print(f"\n🔍 VALIDATING {len(df)} ROWS AGAINST PACS.008 XSD")
+        print("="*80)
+        
+        all_issues = []
+        issue_summary = {}
+        
+        for index, row in df.iterrows():
+            row_values = row.tolist()
+            headers = df.columns.tolist()
+            
+            row_issues, tran_id = self.validate_csv_row(row_values, index + 1, headers)
+            
+            if row_issues:
+                all_issues.append({
+                    'row': index + 1,
+                    'tran_id': tran_id,
+                    'issues': row_issues
+                })
+                
+                # Count issue types
+                for issue in row_issues:
+                    issue_type = issue.split(':')[0].strip('❌⚠️ℹ️🚨 ')
+                    issue_summary[issue_type] = issue_summary.get(issue_type, 0) + 1
+        
+        # Step 4: Generate summary report
+        self.generate_summary_report(all_issues, issue_summary, len(df), mapped_in_csv, unmapped_in_csv)
+        
+        return all_issues
+    
+    def generate_summary_report(self, all_issues, issue_summary, total_rows, mapped_columns, unmapped_columns):
+        """Generate comprehensive summary report"""
+        print("\n" + "="*80)
+        print("📊 FINAL VALIDATION SUMMARY REPORT")
+        print("="*80)
+        
+        print(f"\n📈 PROCESSING STATISTICS:")
+        print(f"   Total Rows Processed: {total_rows:,}")
+        print(f"   Rows with Issues: {len(all_issues):,}")
+        print(f"   Clean Rows: {total_rows - len(all_issues):,}")
+        print(f"   Compliance Rate: {((total_rows - len(all_issues)) / total_rows * 100):.1f}%")
+        
+        print(f"\n🗺️ FIELD MAPPING COVERAGE:")
+        print(f"   Mapped to pacs.008: {len(mapped_columns)} fields")
+        print(f"   Unmapped fields: {len(unmapped_columns)} fields")
+        print(f"   Mapping Coverage: {(len(mapped_columns) / (len(mapped_columns) + len(unmapped_columns)) * 100):.1f}%")
+        
+        if issue_summary:
+            print(f"\n🚨 ISSUE BREAKDOWN:")
             print("-" * 50)
             
-            # Group by TRAN_ID for duplicate detection
-            tran_id_groups = {}
-            for issue_data in all_issues:
-                tran_id = issue_data['tran_id']
-                if tran_id not in tran_id_groups:
-                    tran_id_groups[tran_id] = []
-                tran_id_groups[tran_id].append(issue_data)
+            critical_issues = {k: v for k, v in issue_summary.items() if 'REQUIRED' in k or 'BUSINESS RULE' in k}
+            format_issues = {k: v for k, v in issue_summary.items() if k not in critical_issues}
             
-            # Show duplicate TRAN_IDs if any
-            duplicates = {tid: rows for tid, rows in tran_id_groups.items() if len(rows) > 1}
-            if duplicates:
-                print(f"\n⚠️  DUPLICATE TRAN_IDs DETECTED:")
-                for tran_id, rows in duplicates.items():
-                    print(f"    TRAN_ID '{tran_id}' appears in rows: {[r['row'] for r in rows]}")
+            if critical_issues:
+                print("   CRITICAL ISSUES:")
+                for issue_type, count in sorted(critical_issues.items(), key=lambda x: x[1], reverse=True):
+                    print(f"   ❌ {issue_type:<40}: {count:>5} occurrences")
             
-            # List all problematic rows
-            for i, issue_data in enumerate(all_issues, 1):
-                issue_count = len(issue_data['issues'])
-                severity = "🔥" if issue_count > 5 else "⚠️" if issue_count > 2 else "ℹ️"
-                
-                print(f"   {i:3d}. Row {issue_data['row']:4d}: TRAN_ID = '{issue_data['tran_id']}' {severity} ({issue_count} issues)")
-                
-                # Show first few issues for context
-                for j, issue in enumerate(issue_data['issues'][:2]):
-                    print(f"        • {issue}")
-                if issue_count > 2:
-                    print(f"        • ... and {issue_count - 2} more issues")
+            if format_issues:
+                print("   FORMAT/VALIDATION ISSUES:")
+                for issue_type, count in sorted(format_issues.items(), key=lambda x: x[1], reverse=True):
+                    print(f"   ⚠️ {issue_type:<40}: {count:>5} occurrences")
         
-        # TRAN_ID analysis
-        print(f"\n📊 TRAN_ID ANALYSIS:")
-        print("-" * 30)
+        if all_issues:
+            print(f"\n📋 SAMPLE PROBLEMATIC TRAN_IDs (First 10):")
+            print("-" * 50)
+            for i, issue_data in enumerate(all_issues[:10], 1):
+                severity = "🔥" if len(issue_data['issues']) > 5 else "⚠️" if len(issue_data['issues']) > 2 else "ℹ️"
+                print(f"   {i:2d}. {severity} Row {issue_data['row']:4d} | TRAN_ID: '{issue_data['tran_id']}' | {len(issue_data['issues'])} issues")
         
-        all_tran_ids = []
-        for issue_data in all_issues:
-            all_tran_ids.append(issue_data['tran_id'])
-        for clean_row in clean_rows:
-            all_tran_ids.append(clean_row['tran_id'])
-        
-        unique_tran_ids = set(all_tran_ids)
-        null_tran_ids = sum(1 for tid in all_tran_ids if tid in ['N/A', '', 'nan', 'None'])
-        
-        print(f"   Total TRAN_IDs: {len(all_tran_ids)}")
-        print(f"   Unique TRAN_IDs: {len(unique_tran_ids)}")
-        print(f"   Duplicate TRAN_IDs: {len(all_tran_ids) - len(unique_tran_ids)}")
-        print(f"   Null/Empty TRAN_IDs: {null_tran_ids}")
-        
-        if null_tran_ids > 0:
-            print(f"\n⚠️  WARNING: {null_tran_ids} rows have missing TRAN_ID - this violates pacs.008 requirements!")
+        print(f"\n🎯 NEXT STEPS:")
+        print("   1. ❌ Fix all REQUIRED field violations first")
+        print("   2. 🚨 Address BUSINESS RULE violations")
+        print("   3. ⚠️ Clean up format and validation issues")
+        print("   4. 🗺️ Consider mapping unmapped fields if relevant to pacs.008")
+        print("   5. ✅ Re-run validation after fixes")
         
         print("="*80)
 
-# Usage
+# Usage function
 def main():
-    validator = FedPacs008Validator()
+    validator = CSVFedPacs008Validator()
     
-    # Update with your Excel file path
-    excel_file_path = "wire_transfer_data.xlsx"
+    # Update with your CSV file path
+    csv_file_path = "wire_transfer_data.csv"  # Change this to your file path
     
-    print("Starting Federal Reserve ISO 20022 pacs.008 compliance validation...")
-    print("Analyzing field mappings and applying Fed-specific business rules...")
+    print("🚀 CSV Federal Reserve ISO 20022 pacs.008 Validator")
+    print("📄 Designed for Mac CSV files with ^M line endings")
+    print("🗺️ Using comprehensive field mapping to pacs.008 XSD")
     
-    issues = validator.process_excel_file(excel_file_path)
+    issues = validator.process_csv_file(csv_file_path)
     
     if issues is not None:
         print(f"\n✅ Validation completed successfully!")
-        print(f"📊 Found {len(issues)} rows with compliance issues")
-        print(f"📋 Review the detailed report above for specific recommendations")
+        print(f"📊 Found {len(issues)} rows with pacs.008 compliance issues")
+        print(f"🔍 Each TRAN_ID and its issues were printed above")
     else:
         print("❌ Validation failed. Please check the file path and format.")
 
