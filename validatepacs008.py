@@ -5,6 +5,7 @@ import xmlschema
 from datetime import datetime
 import logging
 import os
+import sys
 from decimal import Decimal
 import xml.etree.ElementTree as ET
 
@@ -12,9 +13,9 @@ import xml.etree.ElementTree as ET
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class TrueXSDPacs008Validator:
-    def __init__(self):
-        self.xsd_url = "https://raw.githubusercontent.com/phoughton/pyiso20022/main/xsd/payments_clearing_and_settlement/pacs.008/pacs.008.001.08.xsd"
-        self.xsd_file = "pacs.008.001.08.xsd"
+    def __init__(self, xsd_file_path=None):
+        # Use provided XSD file path or default
+        self.xsd_file = xsd_file_path or "pacs.008.001.08.xsd"
         self.schema = None
         
         # CSV column order from your specification
@@ -44,30 +45,31 @@ class TrueXSDPacs008Validator:
         self.load_xsd_schema()
     
     def load_xsd_schema(self):
-        """Download and load the pacs.008 XSD schema"""
-        print("📥 Loading pacs.008.001.08 XSD schema...")
+        """Load the local pacs.008 XSD schema"""
+        print(f"📥 Loading local pacs.008.001.08 XSD schema from: {self.xsd_file}")
         
         try:
-            # Download XSD if not exists
+            # Check if XSD file exists
             if not os.path.exists(self.xsd_file):
-                print(f"🌐 Downloading XSD from: {self.xsd_url}")
-                response = requests.get(self.xsd_url)
-                response.raise_for_status()
-                
-                with open(self.xsd_file, 'w', encoding='utf-8') as f:
-                    f.write(response.text)
-                print(f"✅ XSD downloaded and saved as {self.xsd_file}")
-            else:
-                print(f"📄 Using existing XSD file: {self.xsd_file}")
+                print(f"❌ XSD file not found: {self.xsd_file}")
+                print(f"💡 Please ensure you have downloaded the XSD file to: {os.path.abspath(self.xsd_file)}")
+                print(f"🌐 Download from: https://github.com/phoughton/pyiso20022/blob/main/xsd/payments_clearing_and_settlement/pacs.008/pacs.008.001.08.xsd")
+                self.schema = None
+                return
+            
+            print(f"📄 Found XSD file: {os.path.abspath(self.xsd_file)}")
+            print(f"📊 File size: {os.path.getsize(self.xsd_file)} bytes")
             
             # Load schema using xmlschema
             self.schema = xmlschema.XMLSchema(self.xsd_file)
             print(f"✅ XSD schema loaded successfully!")
             print(f"   Schema target namespace: {self.schema.target_namespace}")
-            print(f"   Schema version: {getattr(self.schema, 'version', 'Not specified')}")
+            print(f"   Schema elements: {len(self.schema.elements)} root elements")
+            print(f"   Schema types: {len(self.schema.types)} defined types")
             
         except Exception as e:
             print(f"❌ Error loading XSD schema: {str(e)}")
+            print(f"💡 Make sure the XSD file is valid and not corrupted")
             self.schema = None
     
     def preprocess_csv_file(self, file_path):
@@ -493,25 +495,147 @@ class TrueXSDPacs008Validator:
         
         print("="*80)
 
-# Usage
+# Interactive input functions
+def get_csv_filename():
+    """Get CSV filename from user input"""
+    while True:
+        csv_file = input("\n📄 Enter CSV filename (or full path): ").strip()
+        
+        if not csv_file:
+            print("❌ Please enter a filename")
+            continue
+        
+        # Add .csv extension if not provided
+        if not csv_file.lower().endswith('.csv'):
+            csv_file += '.csv'
+        
+        # Check if file exists
+        if os.path.exists(csv_file):
+            print(f"✅ Found CSV file: {os.path.abspath(csv_file)}")
+            return csv_file
+        else:
+            print(f"❌ File not found: {os.path.abspath(csv_file)}")
+            retry = input("🔄 Try again? (y/n): ").strip().lower()
+            if retry != 'y':
+                return None
+
+def get_xsd_filename():
+    """Get XSD filename from user input"""
+    while True:
+        print("\n📋 XSD File Options:")
+        print("1. Use default: pacs.008.001.08.xsd (in current directory)")
+        print("2. Enter custom XSD file path")
+        
+        choice = input("Choose option (1 or 2): ").strip()
+        
+        if choice == '1':
+            xsd_file = "pacs.008.001.08.xsd"
+        elif choice == '2':
+            xsd_file = input("📄 Enter XSD filename (or full path): ").strip()
+            if not xsd_file:
+                print("❌ Please enter a filename")
+                continue
+        else:
+            print("❌ Invalid choice. Please enter 1 or 2")
+            continue
+        
+        # Check if file exists
+        if os.path.exists(xsd_file):
+            print(f"✅ Found XSD file: {os.path.abspath(xsd_file)}")
+            return xsd_file
+        else:
+            print(f"❌ XSD file not found: {os.path.abspath(xsd_file)}")
+            print(f"💡 Download from: https://github.com/phoughton/pyiso20022/blob/main/xsd/payments_clearing_and_settlement/pacs.008/pacs.008.001.08.xsd")
+            retry = input("🔄 Try again? (y/n): ").strip().lower()
+            if retry != 'y':
+                return None
+
+# Usage function with interactive input
 def main():
-    validator = TrueXSDPacs008Validator()
-    
-    # Update with your CSV file path
-    csv_file_path = "wire_transfer_data.csv"  # Change to your file
-    
     print("🚀 TRUE XSD pacs.008.001.08 Validator")
+    print("="*50)
     print("📄 Uses official ISO 20022 XSD schema")
     print("🔍 Converts CSV to XML and validates against XSD")
+    print("📋 Handles Mac CSV files with ^M line endings")
     
-    issues = validator.process_csv_file(csv_file_path)
+    # Get XSD file
+    xsd_file = get_xsd_filename()
+    if not xsd_file:
+        print("❌ Cannot proceed without XSD file. Exiting.")
+        return
+    
+    # Get CSV file
+    csv_file = get_csv_filename()
+    if not csv_file:
+        print("❌ Cannot proceed without CSV file. Exiting.")
+        return
+    
+    # Initialize validator with local XSD
+    print(f"\n🔧 Initializing validator...")
+    validator = TrueXSDPacs008Validator(xsd_file)
+    
+    # Check if schema loaded successfully
+    if not validator.schema:
+        print("❌ Failed to load XSD schema. Cannot proceed.")
+        return
+    
+    # Process the CSV file
+    print(f"\n🚀 Starting validation of {csv_file}")
+    issues = validator.process_csv_file(csv_file)
     
     if issues is not None:
         print(f"\n✅ XSD validation completed!")
         print(f"📊 {len(issues)} rows have XSD schema violations")
-        print(f"🎯 Fix XSD errors for true Fed ISO 20022 compliance")
+        if len(issues) == 0:
+            print(f"🎉 All rows are XSD compliant! Ready for Fed processing.")
+        else:
+            print(f"🎯 Fix XSD errors for true Fed ISO 20022 compliance")
     else:
-        print("❌ Validation failed. Check file path and XSD schema.")
+        print("❌ Validation failed. Check file format and try again.")
+
+def main_with_args():
+    """Alternative main function that accepts command line arguments"""
+    if len(sys.argv) < 2:
+        print("Usage: python validator.py <csv_file> [xsd_file]")
+        print("  csv_file: Path to your CSV file")
+        print("  xsd_file: Optional path to XSD file (default: pacs.008.001.08.xsd)")
+        print("\nOr run without arguments for interactive mode:")
+        main()
+        return
+    
+    csv_file = sys.argv[1]
+    xsd_file = sys.argv[2] if len(sys.argv) > 2 else "pacs.008.001.08.xsd"
+    
+    print(f"🚀 TRUE XSD pacs.008.001.08 Validator")
+    print(f"📄 CSV File: {csv_file}")
+    print(f"📋 XSD File: {xsd_file}")
+    
+    # Check files exist
+    if not os.path.exists(csv_file):
+        print(f"❌ CSV file not found: {csv_file}")
+        return
+    
+    if not os.path.exists(xsd_file):
+        print(f"❌ XSD file not found: {xsd_file}")
+        return
+    
+    # Initialize and run validator
+    validator = TrueXSDPacs008Validator(xsd_file)
+    
+    if not validator.schema:
+        print("❌ Failed to load XSD schema.")
+        return
+    
+    issues = validator.process_csv_file(csv_file)
+    
+    if issues is not None:
+        print(f"\n✅ Validation completed: {len(issues)} rows with XSD violations")
+    else:
+        print("❌ Validation failed.")
 
 if __name__ == "__main__":
-    main()
+    # Check if command line arguments provided
+    if len(sys.argv) > 1:
+        main_with_args()
+    else:
+        main()
