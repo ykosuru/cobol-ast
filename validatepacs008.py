@@ -1,58 +1,4 @@
-def generate_report(self, all_issues, issue_summary, total_rows, completeness_report):
-        """Generate validation report"""
-        print("\n" + "="*80)
-        print("PACS.008 COMPLIANCE VALIDATION REPORT")
-        print("="*80)
-        
-        print(f"\nDATA OVERVIEW:")
-        print("-" * 40)
-        print(f"Total Rows Processed: {total_rows}")
-        print(f"Rows with Issues: {len(all_issues)}")
-        print(f"Clean Rows: {total_rows - len(all_issues)}")
-        print(f"Compliance Rate: {((total_rows - len(all_issues)) / total_rows * 100):.1f}%")
-        
-        print(f"\nDATA COMPLETENESS BY FIELD GROUP:")
-        print("-" * 60)
-        for group_name, fields in completeness_report.items():
-            print(f"\n{group_name}:")
-            for field_name, stats in fields.items():
-                status = "✓" if stats['percentage'] > 50 else "⚠" if stats['percentage'] > 10 else "✗"
-                print(f"  {status} {field_name:<25}: {stats['populated']:>4}/{total_rows} ({stats['percentage']:>5.1f}%)")
-        
-        if issue_summary:
-            print(f"\nISSUE SUMMARY:")
-            print("-" * 40)
-            for issue_type, count in sorted(issue_summary.items(), key=lambda x: x[1], reverse=True):
-                print(f"{issue_type:<35}: {count:>5} occurrences")
-        
-        if all_issues:
-            print(f"\nDETAILED ISSUES (First 20 rows):")
-            print("-" * 80)
-            
-            for issue_data in all_issues[:20]:
-                print(f"\nRow {issue_data['row']} (TRAN_ID: {issue_data['tran_id']}):")
-                for issue in issue_data['issues']:
-                    if issue.startswith('MISSING REQUIRED'):
-                        print(f"  ⚠ {issue}")
-                    else:
-                        print(f"  • {issue}")
-        
-        print(f"\nRECOMMENDations FOR NULL/EMPTY DATA:")
-        print("-" * 50)
-        
-        null_handling_tips = [
-            "1. REQUIRED FIELDS: Must be populated for valid pacs.008 messages",
-            "2. OPTIONAL FIELDS: Empty/null values are acceptable and will be omitted from XML",
-            "3. CONDITIONAL FIELDS: Some fields depend on network type (SOURCE_CD/INSTR_ADV_TYPE)",
-            "4. NAME CONCATENATION: Multiple name fields will be combined with spaces",
-            "5. DEFAULT VALUES: Consider setting defaults for missing boolean fields (false)",
-            "6. NETWORK-SPECIFIC: Only include relevant network sections based on routing"
-        ]
-        
-        for tip in null_handling_tips:
-            print(f"  {tip}")
-        
-        print(f"\nGENERAL COMPLIANCE RECOMMENDATIONS:")import pandas as pd
+import pandas as pd
 import re
 from datetime import datetime
 import xml.sax.saxutils as saxutils
@@ -170,15 +116,52 @@ class Pacs008Validator:
         
         return issues
     
-    def validate_amount(self, value, field_name):
-        """Validate monetary amount"""
-        issues = []
-        if self.is_empty_or_null(value):
+def validate_amount(self, value, field_name):
+    """Validate monetary amount"""
+    issues = []
+    if self.is_empty_or_null(value):
+        return issues
+    
+    try:
+        # Convert to string safely
+        clean_value = str(value).strip()
+        
+        # Remove currency symbols one by one
+        clean_value = clean_value.replace('$', '')
+        clean_value = clean_value.replace('€', '')
+        clean_value = clean_value.replace('£', '')
+        clean_value = clean_value.replace(',', '')
+        clean_value = clean_value.replace(' ', '')
+        clean_value = clean_value.strip()
+        
+        # Handle accounting format negatives
+        if clean_value.startswith('(') and clean_value.endswith(')'):
+            clean_value = '-' + clean_value[1:-1]
+        
+        # Skip if empty after cleaning
+        if not clean_value:
             return issues
         
-        try:
-            # Remove any currency symbols or commas
-            clean_value = str(value).replace(',', '').replace('
+        # Convert to Decimal
+        amount = Decimal(clean_value)
+        
+        # Basic validations
+        if amount < 0:
+            issues.append(f"{field_name}: Negative amount")
+        
+        if amount == 0:
+            issues.append(f"{field_name}: Zero amount")
+        
+        # Check decimal places
+        if '.' in clean_value:
+            decimal_places = len(clean_value.split('.')[1])
+            if decimal_places > 5:
+                issues.append(f"{field_name}: Too many decimal places")
+        
+    except:
+        issues.append(f"{field_name}: Invalid amount format")
+    
+    return issues
     
     def validate_row(self, row, row_index):
         """Validate a single row of data"""
@@ -888,6 +871,62 @@ if __name__ == "__main__":
         for fix in common_fixes:
             print(f"  {fix}")
 
+def generate_report(self, all_issues, issue_summary, total_rows, completeness_report):
+        """Generate validation report"""
+        print("\n" + "="*80)
+        print("PACS.008 COMPLIANCE VALIDATION REPORT")
+        print("="*80)
+        
+        print(f"\nDATA OVERVIEW:")
+        print("-" * 40)
+        print(f"Total Rows Processed: {total_rows}")
+        print(f"Rows with Issues: {len(all_issues)}")
+        print(f"Clean Rows: {total_rows - len(all_issues)}")
+        print(f"Compliance Rate: {((total_rows - len(all_issues)) / total_rows * 100):.1f}%")
+        
+        print(f"\nDATA COMPLETENESS BY FIELD GROUP:")
+        print("-" * 60)
+        for group_name, fields in completeness_report.items():
+            print(f"\n{group_name}:")
+            for field_name, stats in fields.items():
+                status = "✓" if stats['percentage'] > 50 else "⚠" if stats['percentage'] > 10 else "✗"
+                print(f"  {status} {field_name:<25}: {stats['populated']:>4}/{total_rows} ({stats['percentage']:>5.1f}%)")
+        
+        if issue_summary:
+            print(f"\nISSUE SUMMARY:")
+            print("-" * 40)
+            for issue_type, count in sorted(issue_summary.items(), key=lambda x: x[1], reverse=True):
+                print(f"{issue_type:<35}: {count:>5} occurrences")
+        
+        if all_issues:
+            print(f"\nDETAILED ISSUES (First 20 rows):")
+            print("-" * 80)
+            
+            for issue_data in all_issues[:20]:
+                print(f"\nRow {issue_data['row']} (TRAN_ID: {issue_data['tran_id']}):")
+                for issue in issue_data['issues']:
+                    if issue.startswith('MISSING REQUIRED'):
+                        print(f"  ⚠ {issue}")
+                    else:
+                        print(f"  • {issue}")
+        
+        print(f"\nRECOMMENDations FOR NULL/EMPTY DATA:")
+        print("-" * 50)
+        
+        null_handling_tips = [
+            "1. REQUIRED FIELDS: Must be populated for valid pacs.008 messages",
+            "2. OPTIONAL FIELDS: Empty/null values are acceptable and will be omitted from XML",
+            "3. CONDITIONAL FIELDS: Some fields depend on network type (SOURCE_CD/INSTR_ADV_TYPE)",
+            "4. NAME CONCATENATION: Multiple name fields will be combined with spaces",
+            "5. DEFAULT VALUES: Consider setting defaults for missing boolean fields (false)",
+            "6. NETWORK-SPECIFIC: Only include relevant network sections based on routing"
+        ]
+        
+        for tip in null_handling_tips:
+            print(f"  {tip}")
+        
+        print(f"\nGENERAL COMPLIANCE RECOMMENDATIONS:")
+        
 # Usage example
 def main():
     validator = Pacs008Validator()
